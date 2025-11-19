@@ -4,7 +4,7 @@ const axios = require('axios');
 const TELEGRAM_TOKEN = '8497221404:AAEiVLukFHvufV7wzBSCIGzfAGWK3YHP9f4';
 const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyQZ2RgUqnziCzd_5UC684qIz1ZxALHMUSL4bBexKp25P222h81LG5Px5zriPhZkyamGA/exec';
 
-console.log('🚀 Starting Telegram Auto-Registration Bot...');
+console.log('🚀 Starting Telegram Auto-Registration Bot on Northflank...');
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { 
   polling: true,
@@ -125,4 +125,43 @@ bot.onText(/\/earnings (.+)/, async (msg, match) => {
     if (data.success) {
       await bot.sendMessage(chatId, data.message);
     } else {
-      await bot.send
+      await bot.sendMessage(chatId, data.message);
+    }
+  } catch (error) {
+    await bot.sendMessage(chatId, '❌ Error fetching earnings. Please try again.');
+  }
+});
+
+// Help command
+bot.onText(/\/help/, (msg) => {
+  const chatId = msg.chat.id;
+  const helpMessage = `📖 **Bot Commands**\n\n` +
+                     `/register - Get your Member ID\n` +
+                     `/myid - Find your existing Member ID\n` +
+                     `/earnings <ID> - Check earnings\n` +
+                     `/start - Welcome message\n\n` +
+                     `💡 **How to use:**\n` +
+                     `1. Use /register to get your Member ID\n` +
+                     `2. Use /earnings YOUR_ID to check earnings\n` +
+                     `3. Forget your ID? Use /myid`;
+  
+  bot.sendMessage(chatId, helpMessage);
+});
+
+// Handle other messages
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  
+  if (text && !text.startsWith('/') && !userStates.has(chatId)) {
+    bot.sendMessage(chatId, 
+      'Use /start to begin or /help for commands.\n\n' +
+      'Available commands:\n' +
+      '• /register - Get Member ID\n' +
+      '• /myid - Find your ID\n' +
+      '• /earnings ID - Check earnings'
+    );
+  }
+});
+
+console.log('✅ Bot is now running on Northflank and ready for registration...');
