@@ -43,4 +43,5 @@ bot.on('message', (msg) => {
   if (text && !text.startsWith('/')) {
     bot.sendMessage(chatId, 'Use /start for help or /earnings YOUR_MEMBER_ID to check earnings.');
   }
+
 });
