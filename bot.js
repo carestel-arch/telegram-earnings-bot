@@ -1,106 +1,160 @@
-const TelegramBot = require('node-telegram-bot-api');
-const axios = require('axios');
-const express = require('express');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-  res.send('🤖 Earnings Bot is running on Heroku...');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const WEB_APP_URL = process.env.WEB_APP_URL;
-
-console.log('🚀 Starting Telegram Bot on Heroku...');
-
-if (!TELEGRAM_TOKEN) {
-  console.log('❌ ERROR: TELEGRAM_TOKEN is missing');
-  process.exit(1);
-}
-
-if (!WEB_APP_URL) {
-  console.log('❌ ERROR: WEB_APP_URL is missing');
-  process.exit(1);
-}
-
-console.log('✅ Environment variables loaded');
-
-// Better bot configuration for Heroku
-const bot = new TelegramBot(TELEGRAM_TOKEN, { 
-  polling: {
-    interval: 1000,
-    timeout: 10,
-    retryTimeout: 1000
-  },
-  request: {
-    timeout: 15000
-  }
-});
-
-// Improved error handling
-bot.on('polling_error', (error) => {
-  console.log('Polling error (normal for Heroku):', error.code);
-});
-
-bot.on('webhook_error', (error) => {
-  console.log('Webhook error:', error);
-});
-
-// Test connection
-bot.getMe().then(botInfo => {
-  console.log('✅ Bot connected to Telegram:', botInfo.username);
-}).catch(error => {
-  console.log('❌ Bot failed to connect:', error.message);
-});
-
-// Start command
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  console.log('✅ Received /start from:', chatId);
-  const welcomeMessage = `👋 Welcome to Earnings Bot!\n\n` +
-                        `Use /earnings YOUR_MEMBER_ID to check your earnings\n` +
-                        `Example: /earnings 123`;
-  
-  bot.sendMessage(chatId, welcomeMessage)
-    .then(() => console.log('✅ Sent welcome message to:', chatId))
-    .catch(error => console.log('❌ Error sending message:', error.message));
-});
-
-// Earnings command
-bot.onText(/\/earnings (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const memberId = match[1].trim();
-  console.log('✅ Received /earnings for:', memberId);
-  
+function doGet(e) {
   try {
-    await bot.sendChatAction(chatId, 'typing');
-    console.log('🔍 Fetching earnings for:', memberId);
+    // Check if event object exists
+    if (!e) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        message: 'No request parameters provided'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
     
-    const response = await axios.get(`${WEB_APP_URL}?action=getEarnings&memberId=${encodeURIComponent(memberId)}`, {
-      timeout: 10000
+    const parameters = e.parameter || {};
+    const action = parameters.action;
+    const memberId = parameters.memberId;
+    
+    console.log('Received request with parameters:', parameters);
+    
+    if (!action) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        message: 'Missing action parameter'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    if (action === 'getEarnings') {
+      if (!memberId) {
+        return ContentService.createTextOutput(JSON.stringify({
+          success: false,
+          message: 'Missing memberId parameter'
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      return getEarningsData(memberId);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      message: 'Invalid action: ' + action
+    })).setMimeType(ContentService.MimeType.JSON);
+    
+  } catch (error) {
+    console.error('Error in doGet:', error);
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      message: 'Server error: ' + error.message
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function getEarningsData(memberId) {
+  try {
+    // Get the main sheet - adjust sheet name if different
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Form responses 1');
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    
+    console.log('Searching for member:', memberId);
+    console.log('Total rows:', data.length);
+    
+    // Find column indices by header names - CORRECTED MAPPING
+    const memberIdCol = headers.indexOf('Member ID');
+    const investmentCol = headers.indexOf('Investment Amount (USD)');
+    
+    // For the earnings columns
+    const dailyProfitCol = findColumnIndex(headers, ['Daily Profit', 'Daily Earnings']);
+    const daysPassedCol = findColumnIndex(headers, ['Days Passed', 'Days Active']);
+    const totalProfitCol = findColumnIndex(headers, ['Total Profit Earned', 'Total Profit']);
+    
+    console.log('Column indices found:', {
+      memberIdCol,
+      investmentCol, 
+      dailyProfitCol,
+      daysPassedCol,
+      totalProfitCol
     });
     
-    const data = response.data;
-    console.log('✅ Earnings data received:', data.success);
+    // Validate we found the necessary columns
+    if (memberIdCol === -1) {
+      return createErrorResponse('Member ID column not found in sheet');
+    }
     
-    await bot.sendMessage(chatId, data.message);
-    console.log('✅ Sent earnings to:', chatId);
+    // Search for member ID in the sheet
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const currentMemberId = row[memberIdCol];
+      
+      if (currentMemberId && currentMemberId.toString().trim() === memberId.toString().trim()) {
+        console.log('Found member at row:', i + 1);
+        
+        const investment = parseFloat(row[investmentCol]) || 0;
+        const dailyEarnings = dailyProfitCol !== -1 ? (parseFloat(row[dailyProfitCol]) || 0) : 0;
+        const totalProfit = totalProfitCol !== -1 ? (parseFloat(row[totalProfitCol]) || 0) : 0;
+        const daysActive = daysPassedCol !== -1 ? (parseInt(row[daysPassedCol]) || 0) : 0;
+        
+        console.log('Extracted data:', { investment, dailyEarnings, totalProfit, daysActive });
+        
+        const message = `💰 **Earnings Summary**\n\nMember ID: ${memberId}\n💵 Investment: $${investment.toFixed(2)}\n📊 Daily Earnings: $${dailyEarnings.toFixed(2)}\n💰 Total Profit: $${totalProfit.toFixed(2)}\n📅 Days Active: ${daysActive} days`;
+        
+        return ContentService.createTextOutput(JSON.stringify({
+          success: true,
+          message: message
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    
+    // Member not found
+    console.log('Member not found:', memberId);
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      message: '❌ Member ID not found. Please check your Member ID and try again.'
+    })).setMimeType(ContentService.MimeType.JSON);
+    
   } catch (error) {
-    console.log('❌ Error fetching earnings:', error.message);
-    await bot.sendMessage(chatId, '❌ Error fetching earnings. Please try again.');
+    console.error('Error in getEarningsData:', error.toString(), error.stack);
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      message: '❌ Server error. Please try again later.'
+    })).setMimeType(ContentService.MimeType.JSON);
   }
-});
+}
 
-// Register command
-bot.onText(/\/register/, (msg) => {
-  const chatId = msg.chat.id;
-  console.log('✅ Received /register from:', chatId);
-  bot.sendMessage(chatId, 'Please use the web interface for registration.');
-});
+// Helper function to find column by multiple possible header names
+function findColumnIndex(headers, possibleNames) {
+  for (const name of possibleNames) {
+    const index = headers.indexOf(name);
+    if (index !== -1) return index;
+  }
+  return -1;
+}
 
-console.log('✅ Bot is ready and listening for commands...');
+// Helper function for error responses
+function createErrorResponse(message) {
+  return ContentService.createTextOutput(JSON.stringify({
+    success: false,
+    message: '❌ ' + message
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+// Test function - run this directly in Apps Script to debug
+function testEarnings() {
+  // Test with a known member ID
+  const testMemberId = 'SLA-087';
+  console.log('Testing with member ID:', testMemberId);
+  
+  const result = getEarningsData(testMemberId);
+  console.log('Test result:', result.getContent());
+  
+  return result;
+}
+
+// Debug function to check column headers
+function debugHeaders() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Form responses 1');
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  console.log('All headers with indices:');
+  headers.forEach((header, index) => {
+    console.log(`Column ${index}: "${header}"`);
+  });
+  
+  return headers;
+}
