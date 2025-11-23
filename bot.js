@@ -135,14 +135,15 @@ bot.onText(/\/earnings (.+)/, async (msg, match) => {
   }
 });
 
-// Help command
+// Help command - UPDATED with support contact
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
   const helpMessage = `🤖 **Earnings Bot Help**\n\n` +
                      `/start - Start the bot\n` +
                      `/earnings MEMBER_ID - Check your earnings\n` +
                      `/register - Registration information\n` +
-                     `/help - Show this help message`;
+                     `/help - Show this help message\n\n` +
+                     `Contact support: @starlifeadvert`;
   
   bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
