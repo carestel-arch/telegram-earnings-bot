@@ -774,7 +774,6 @@ bot.onText(/\/start/, async (msg) => {
   }
   
   // User is not logged in - show public welcome
-  // Show fake members success stories
   const fakeMembers = await loadData(FAKE_MEMBERS_FILE);
   const recentSuccess = fakeMembers.slice(0, 3);
   
@@ -797,6 +796,179 @@ bot.onText(/\/start/, async (msg) => {
   fakeMessage += 'Name: Starlife Advert US Agency';
   
   await bot.sendMessage(chatId, fakeMessage);
+});
+
+// Invest command
+bot.onText(/\/invest/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'awaiting_investment_amount',
+    data: {
+      memberId: user.memberId
+    }
+  };
+  
+  await bot.sendMessage(chatId,
+    `💰 **Make Investment**\n\n` +
+    `Minimum Investment: $10\n` +
+    `Maximum Investment: $10,000\n` +
+    `Daily Profit: 2%\n` +
+    `Investment Period: 30 days\n\n` +
+    `Enter amount to invest:`
+  );
+});
+
+// Earnings command
+bot.onText(/\/earnings/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const investments = await loadData(INVESTMENTS_FILE);
+  const userInvestments = investments.filter(inv => inv.memberId === user.memberId);
+  
+  let message = `📈 **Your Earnings**\n\n`;
+  message += `💰 Balance: ${formatCurrency(user.balance || 0)}\n`;
+  message += `📊 Total Earned: ${formatCurrency(user.totalEarned || 0)}\n`;
+  message += `💵 Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
+  message += `👥 Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
+  
+  if (userInvestments.length > 0) {
+    message += `**Active Investments:**\n`;
+    userInvestments.filter(inv => inv.status === 'active').forEach(inv => {
+      message += `• ${formatCurrency(inv.amount)} - ${inv.daysActive || 0}/30 days\n`;
+    });
+  } else {
+    message += `No active investments.\n`;
+    message += `Use /invest to start earning!\n`;
+  }
+  
+  await bot.sendMessage(chatId, message);
+});
+
+// Profile command
+bot.onText(/\/profile/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const referrals = await loadData(REFERRALS_FILE);
+  const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
+  const successfulReferrals = userReferrals.filter(r => r.status === 'paid');
+  
+  let message = `👤 **Your Profile**\n\n`;
+  message += `Name: ${user.name}\n`;
+  message += `Member ID: ${user.memberId}\n`;
+  message += `Email: ${user.email || 'Not set'}\n`;
+  message += `Joined: ${new Date(user.joinedDate).toLocaleDateString()}\n`;
+  message += `Last Login: ${user.lastLogin ? new Date(user.lastLogin).toLocaleDateString() : 'Never'}\n\n`;
+  message += `💰 **Financial Summary**\n`;
+  message += `Balance: ${formatCurrency(user.balance || 0)}\n`;
+  message += `Total Earned: ${formatCurrency(user.totalEarned || 0)}\n`;
+  message += `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
+  message += `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
+  message += `👥 **Referral Stats**\n`;
+  message += `Total Referrals: ${user.referrals || 0}\n`;
+  message += `Successful Referrals: ${successfulReferrals.length}\n`;
+  message += `Your Code: ${user.referralCode}\n\n`;
+  message += `**Share your referral link:**\n`;
+  message += `https://t.me/your_bot_username?start=${user.referralCode}`;
+  
+  await bot.sendMessage(chatId, message);
+});
+
+// Referral command
+bot.onText(/\/referral/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const referrals = await loadData(REFERRALS_FILE);
+  const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
+  
+  let message = `👥 **Referral Program**\n\n`;
+  message += `**Earn 10% commission** on every investment your referrals make!\n\n`;
+  message += `Your Referral Code: **${user.referralCode}**\n`;
+  message += `Total Referrals: ${user.referrals || 0}\n`;
+  message += `Total Earned from Referrals: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
+  message += `**How to share:**\n`;
+  message += `1. Share this link:\n`;
+  message += `https://t.me/your_bot_username?start=${user.referralCode}\n\n`;
+  message += `2. Or tell friends to use:\n`;
+  message += `/register ${user.referralCode}\n\n`;
+  message += `**Your Referrals:**\n`;
+  
+  if (userReferrals.length > 0) {
+    userReferrals.forEach((ref, index) => {
+      const status = ref.status === 'paid' ? '✅ Paid' : '⏳ Pending';
+      message += `${index + 1}. ${ref.referredName} - ${status}\n`;
+    });
+  } else {
+    message += `No referrals yet. Start sharing your code!`;
+  }
+  
+  await bot.sendMessage(chatId, message);
+});
+
+// Withdraw command
+bot.onText(/\/withdraw/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  if ((user.balance || 0) < 10) {
+    await bot.sendMessage(chatId,
+      `❌ **Insufficient Balance**\n\n` +
+      `Minimum withdrawal: $10\n` +
+      `Your balance: ${formatCurrency(user.balance || 0)}\n\n` +
+      `Please earn more through investments first.`
+    );
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'awaiting_withdrawal_amount',
+    data: {
+      memberId: user.memberId,
+      balance: user.balance
+    }
+  };
+  
+  await bot.sendMessage(chatId,
+    `💳 **Withdraw Funds**\n\n` +
+    `Your Balance: ${formatCurrency(user.balance || 0)}\n` +
+    `Minimum Withdrawal: $10\n` +
+    `Withdrawal Fee: 5%\n\n` +
+    `Enter amount to withdraw:`
+  );
 });
 
 // Logout command
@@ -1436,6 +1608,250 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, welcomeMessage);
     }
     
+    // Handle investment amount
+    else if (session.step === 'awaiting_investment_amount') {
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount < 10 || amount > 10000) {
+        await bot.sendMessage(chatId,
+          `❌ Invalid amount.\n` +
+          `Minimum: $10\n` +
+          `Maximum: $10,000\n\n` +
+          `Please enter a valid amount:`
+        );
+        return;
+      }
+      
+      const users = await loadData(USERS_FILE);
+      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      
+      if (userIndex === -1) {
+        await bot.sendMessage(chatId, '❌ User not found.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      if ((users[userIndex].balance || 0) < amount) {
+        await bot.sendMessage(chatId,
+          `❌ **Insufficient Balance**\n\n` +
+          `Required: ${formatCurrency(amount)}\n` +
+          `Your Balance: ${formatCurrency(users[userIndex].balance || 0)}\n\n` +
+          `Please add funds first.`
+        );
+        delete userSessions[chatId];
+        return;
+      }
+      
+      // Deduct from balance
+      users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - amount;
+      users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + amount;
+      users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
+      
+      // Create investment
+      const investments = await loadData(INVESTMENTS_FILE);
+      const investmentId = `INV-${Date.now()}`;
+      
+      const investment = {
+        id: investmentId,
+        memberId: session.data.memberId,
+        amount: amount,
+        status: 'active',
+        date: new Date().toISOString(),
+        daysActive: 0,
+        totalProfit: 0
+      };
+      
+      investments.push(investment);
+      
+      await saveData(USERS_FILE, users);
+      await saveData(INVESTMENTS_FILE, investments);
+      
+      // Record transaction
+      const transactions = await loadData(TRANSACTIONS_FILE);
+      transactions.push({
+        id: `TRX-INV-${Date.now()}`,
+        memberId: session.data.memberId,
+        type: 'investment',
+        amount: -amount,
+        description: `Investment #${investmentId}`,
+        date: new Date().toISOString()
+      });
+      await saveData(TRANSACTIONS_FILE, transactions);
+      
+      delete userSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Investment Successful!**\n\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `Investment ID: ${investmentId}\n` +
+        `Daily Profit: ${formatCurrency(calculateDailyProfit(amount))}\n` +
+        `Duration: 30 days\n\n` +
+        `Your investment is now active and earning 2% daily!\n` +
+        `Check your earnings with /earnings`
+      );
+    }
+    
+    // Handle withdrawal amount
+    else if (session.step === 'awaiting_withdrawal_amount') {
+      const amount = parseFloat(text);
+      
+      if (isNaN(amount) || amount < 10 || amount > session.data.balance) {
+        await bot.sendMessage(chatId,
+          `❌ Invalid amount.\n` +
+          `Minimum: $10\n` +
+          `Maximum: ${formatCurrency(session.data.balance)}\n\n` +
+          `Please enter a valid amount:`
+        );
+        return;
+      }
+      
+      const fee = calculateWithdrawalFee(amount);
+      const netAmount = calculateNetWithdrawal(amount);
+      
+      session.data.withdrawalAmount = amount;
+      session.data.fee = fee;
+      session.data.netAmount = netAmount;
+      session.step = 'awaiting_withdrawal_method';
+      
+      await bot.sendMessage(chatId,
+        `💰 **Withdrawal Details**\n\n` +
+        `Amount: ${formatCurrency(amount)}\n` +
+        `Fee (5%): ${formatCurrency(fee)}\n` +
+        `Net Amount: ${formatCurrency(netAmount)}\n\n` +
+        `Select withdrawal method:\n\n` +
+        `1️⃣ M-Pesa\n` +
+        `2️⃣ Bank Transfer\n` +
+        `3️⃣ PayPal\n\n` +
+        `Reply with number (1-3):`
+      );
+    }
+    else if (session.step === 'awaiting_withdrawal_method') {
+      const methodNumber = parseInt(text);
+      const methods = ['M-Pesa', 'Bank Transfer', 'PayPal'];
+      
+      if (isNaN(methodNumber) || methodNumber < 1 || methodNumber > 3) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-3:');
+        return;
+      }
+      
+      const method = methods[methodNumber - 1];
+      session.data.method = method;
+      session.step = 'awaiting_withdrawal_details';
+      
+      let detailsPrompt = '';
+      
+      if (method === 'M-Pesa') {
+        detailsPrompt = `Enter your M-Pesa phone number:\n` +
+                       `Example: 254712345678`;
+      } else if (method === 'Bank Transfer') {
+        detailsPrompt = `Enter your bank details:\n` +
+                       `• Account Name\n` +
+                       `• Account Number\n` +
+                       `• Bank Name\n` +
+                       `• SWIFT/BIC Code (if international)`;
+      } else {
+        detailsPrompt = `Enter your PayPal email address:`;
+      }
+      
+      await bot.sendMessage(chatId,
+        `✅ Method: ${method}\n\n` +
+        `${detailsPrompt}\n\n` +
+        `Enter the required information:`
+      );
+    }
+    else if (session.step === 'awaiting_withdrawal_details') {
+      const details = text.trim();
+      
+      if (details.length < 3) {
+        await bot.sendMessage(chatId, '❌ Details too short. Please provide valid information:');
+        return;
+      }
+      
+      // Update user balance
+      const users = await loadData(USERS_FILE);
+      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      
+      if (userIndex === -1) {
+        await bot.sendMessage(chatId, '❌ User not found.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      // Deduct from balance
+      users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - session.data.withdrawalAmount;
+      await saveData(USERS_FILE, users);
+      
+      // Create withdrawal request
+      const withdrawals = await loadData(WITHDRAWALS_FILE);
+      const withdrawalId = `WDL-${Date.now()}`;
+      
+      const withdrawal = {
+        id: withdrawalId,
+        memberId: session.data.memberId,
+        amount: session.data.withdrawalAmount,
+        fee: session.data.fee,
+        netAmount: session.data.netAmount,
+        method: session.data.method,
+        details: details,
+        status: 'pending',
+        date: new Date().toISOString()
+      };
+      
+      withdrawals.push(withdrawal);
+      await saveData(WITHDRAWALS_FILE, withdrawals);
+      
+      // Record transaction
+      const transactions = await loadData(TRANSACTIONS_FILE);
+      transactions.push({
+        id: `TRX-WDL-${Date.now()}`,
+        memberId: session.data.memberId,
+        type: 'withdrawal',
+        amount: -session.data.withdrawalAmount,
+        description: `Withdrawal #${withdrawalId} (${session.data.method})`,
+        date: new Date().toISOString()
+      });
+      await saveData(TRANSACTIONS_FILE, transactions);
+      
+      delete userSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Withdrawal Request Submitted!**\n\n` +
+        `Amount: ${formatCurrency(session.data.withdrawalAmount)}\n` +
+        `Fee: ${formatCurrency(session.data.fee)}\n` +
+        `Net Amount: ${formatCurrency(session.data.netAmount)}\n` +
+        `Method: ${session.data.method}\n` +
+        `Withdrawal ID: ${withdrawalId}\n\n` +
+        `Your request has been sent for processing.\n` +
+        `Processing time: 10-15 minutes\n\n` +
+        `You will be notified when it's approved.`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const users = await loadData(USERS_FILE);
+        const user = users.find(u => u.memberId === session.data.memberId);
+        
+        const adminMessage = `💳 **New Withdrawal Request**\n\n` +
+                            `ID: ${withdrawalId}\n` +
+                            `User: ${user.name} (${session.data.memberId})\n` +
+                            `Amount: ${formatCurrency(session.data.withdrawalAmount)}\n` +
+                            `Net Amount: ${formatCurrency(session.data.netAmount)}\n` +
+                            `Method: ${session.data.method}\n` +
+                            `Details: ${details}\n\n` +
+                            `**Approve:** /approve ${withdrawalId}\n` +
+                            `**Reject:** /reject ${withdrawalId}`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    
     // Handle universal support
     else if (session.step === 'universal_support_choice') {
       const choice = parseInt(text);
@@ -1756,7 +2172,7 @@ bot.on('message', async (msg) => {
   }
 });
 
-// ==================== ADMIN COMMANDS WITH MEDIA SUPPORT ====================
+// ==================== ADMIN COMMANDS ====================
 
 // ADMIN COMMANDS
 bot.onText(/\/admin/, async (msg) => {
@@ -1994,38 +2410,6 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
       await bot.sendMessage(chatId, message);
     }
     
-    // Show media files if any
-    if (mediaCount > 0) {
-      const recentMedia = chatMedia.slice(-3).reverse(); // Show 3 most recent
-      
-      for (const media of recentMedia) {
-        try {
-          const mediaInfo = `Media from ${new Date(media.timestamp).toLocaleString()}\nCaption: ${media.caption || 'No caption'}`;
-          
-          switch(media.fileType) {
-            case 'photo':
-              await bot.sendPhoto(chatId, media.fileId, { caption: mediaInfo });
-              break;
-            case 'document':
-              await bot.sendDocument(chatId, media.fileId, { caption: mediaInfo });
-              break;
-            case 'video':
-              await bot.sendVideo(chatId, media.fileId, { caption: mediaInfo });
-              break;
-            case 'voice':
-              await bot.sendVoice(chatId, media.fileId, { caption: mediaInfo });
-              break;
-          }
-        } catch (error) {
-          console.log(`Could not forward media ${media.id}:`, error.message);
-          await bot.sendMessage(chatId, `❌ Could not load ${media.fileType}: ${media.caption || 'No caption'}`);
-        }
-      }
-      
-      if (mediaCount > 3) {
-        await bot.sendMessage(chatId, `📎 ... and ${mediaCount - 3} more media files in this chat.`);
-      }
-    }
   } catch (error) {
     console.log('Error in /viewchat:', error.message);
     await bot.sendMessage(chatId, '❌ Error loading chat details.');
@@ -3134,4 +3518,4 @@ process.on('SIGINT', () => {
   });
 });
 
-console.log('✅ Starlife Advert Bot is running! All features enabled with MEDIA SUPPORT!');
+console.log('✅ Starlife Advert Bot is running! All commands fixed and working!');
