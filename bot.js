@@ -133,6 +133,246 @@ function formatCurrency(amount) {
   return `$${parseFloat(amount).toFixed(2)}`;
 }
 
+// ==================== HELPER FUNCTIONS ====================
+
+// Check if user is logged in
+async function isUserLoggedIn(chatId) {
+  // Check if user has explicitly logged out
+  if (loggedOutUsers.has(chatId.toString())) {
+    return false;
+  }
+  
+  // Check if user exists and has chatId
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  return !!user;
+}
+
+// Check if user is logged in AND not banned
+async function canUserAccessAccount(chatId) {
+  if (!await isUserLoggedIn(chatId)) {
+    return false;
+  }
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user) return false;
+  if (user.banned) return false;
+  
+  return true;
+}
+
+// Get user data if logged in
+async function getLoggedInUser(chatId) {
+  if (!await isUserLoggedIn(chatId)) {
+    return null;
+  }
+  
+  const users = await loadData(USERS_FILE);
+  const user = users.find(u => u.chatId === chatId.toString());
+  
+  if (!user || user.banned) {
+    return null;
+  }
+  
+  return user;
+}
+
+// Get user by member ID
+async function getUserByMemberId(memberId) {
+  const users = await loadData(USERS_FILE);
+  return users.find(u => u.memberId === memberId);
+}
+
+// Get active support chat for user
+async function getActiveSupportChat(userId) {
+  const supportChats = await loadData(SUPPORT_CHATS_FILE);
+  return supportChats.find(chat => 
+    (chat.userId === userId || chat.userId === `LOGGED_OUT_${userId}`) && 
+    chat.status === 'active'
+  );
+}
+
+// Send notification to user (works even if logged out - FIXED)
+async function sendUserNotification(memberId, message) {
+  try {
+    const users = await loadData(USERS_FILE);
+    const user = users.find(u => u.memberId === memberId);
+    
+    if (!user) {
+      console.log(`User ${memberId} not found`);
+      return false;
+    }
+    
+    // Check if user has chatId
+    if (!user.chatId) {
+      console.log(`User ${memberId} has no chatId`);
+      return false;
+    }
+    
+    // Check if user is logged out
+    const isLoggedOut = loggedOutUsers.has(user.chatId);
+    
+    // Send message anyway - even if logged out
+    try {
+      await bot.sendMessage(user.chatId, message);
+      
+      // If user was logged out, update last notification time
+      if (isLoggedOut) {
+        const userIndex = users.findIndex(u => u.memberId === memberId);
+        if (userIndex !== -1) {
+          users[userIndex].lastNotification = new Date().toISOString();
+          await saveData(USERS_FILE, users);
+          
+          console.log(`Message sent to logged out user ${memberId}`);
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      console.log(`Could not send message to ${memberId}:`, error.message);
+      
+      // If it's a block/unavailable error, don't keep trying
+      if (error.response && error.response.statusCode === 403) {
+        console.log(`User ${memberId} has blocked the bot`);
+        
+        // Mark user as unavailable
+        const userIndex = users.findIndex(u => u.memberId === memberId);
+        if (userIndex !== -1) {
+          users[userIndex].botBlocked = true;
+          await saveData(USERS_FILE, users);
+        }
+      }
+      
+      return false;
+    }
+  } catch (error) {
+    console.log('Error in sendUserNotification:', error.message);
+    return false;
+  }
+}
+
+// Store message for user who can't receive it now
+async function storeOfflineMessage(memberId, message, type = 'admin_message') {
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId);
+    
+    if (userIndex === -1) return false;
+    
+    // Initialize offlineMessages if not exists
+    if (!users[userIndex].offlineMessages) {
+      users[userIndex].offlineMessages = [];
+    }
+    
+    // Store the message
+    users[userIndex].offlineMessages.push({
+      id: `MSG-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      type: type,
+      message: message,
+      timestamp: new Date().toISOString(),
+      read: false
+    });
+    
+    // Keep only last 50 messages
+    if (users[userIndex].offlineMessages.length > 50) {
+      users[userIndex].offlineMessages = users[userIndex].offlineMessages.slice(-50);
+    }
+    
+    await saveData(USERS_FILE, users);
+    return true;
+  } catch (error) {
+    console.log('Error storing offline message:', error.message);
+    return false;
+  }
+}
+
+// Helper function to send direct message to user (UPDATED)
+async function sendDirectMessageToUser(adminChatId, memberId, messageText) {
+  try {
+    const users = await loadData(USERS_FILE);
+    const user = users.find(u => u.memberId === memberId);
+    
+    if (!user) {
+      await bot.sendMessage(adminChatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    // Check if user has blocked the bot
+    if (user.botBlocked) {
+      await bot.sendMessage(adminChatId,
+        `❌ **User has blocked the bot**\n\n` +
+        `User: ${user.name} (${memberId})\n` +
+        `Message: "${messageText}"\n\n` +
+        `Cannot send message. User needs to unblock the bot first.`
+      );
+      return;
+    }
+    
+    // Try to send message to user
+    const sent = await sendUserNotification(memberId,
+      `📨 **Message from Starlife Advert Admin**\n\n` +
+      `${messageText}\n\n` +
+      `💼 Management Team`
+    );
+    
+    if (sent) {
+      await bot.sendMessage(adminChatId,
+        `✅ **Message sent to ${user.name} (${memberId})**\n\n` +
+        `Message: "${messageText}"`
+      );
+    } else {
+      // Store message for when user comes back online
+      await storeOfflineMessage(memberId, 
+        `📨 **Admin Message (Offline)**\n\n${messageText}\n\n💼 Management Team`,
+        'admin_message'
+      );
+      
+      await bot.sendMessage(adminChatId,
+        `📨 **Message stored for offline user**\n\n` +
+        `User: ${user.name} (${memberId})\n` +
+        `Message: "${messageText}"\n\n` +
+        `User will see this message when they:\n` +
+        `1. Login with /login\n` +
+        `2. Or use /support\n\n` +
+        `Message has been saved in their inbox.`
+      );
+    }
+    
+    // Record this message in support chats
+    const supportChats = await loadData(SUPPORT_CHATS_FILE);
+    const adminMessageChat = {
+      id: `ADMIN-MSG-${Date.now()}`,
+      userId: memberId,
+      userName: user.name,
+      topic: 'Direct Admin Message',
+      status: sent ? 'delivered' : 'stored_offline',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [{
+        sender: 'admin',
+        message: messageText,
+        timestamp: new Date().toISOString(),
+        adminId: adminChatId.toString()
+      }],
+      adminReplied: true,
+      isDirectMessage: true
+    };
+    
+    supportChats.push(adminMessageChat);
+    await saveData(SUPPORT_CHATS_FILE, supportChats);
+    
+  } catch (error) {
+    console.log('Error sending direct message:', error.message);
+    await bot.sendMessage(adminChatId,
+      `❌ **Failed to send message**\n\n` +
+      `Error: ${error.message}`
+    );
+  }
+}
+
 // Start server
 const server = app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
@@ -244,82 +484,6 @@ function scheduleDailyProfits() {
   }, 24 * 60 * 60 * 1000);
 }
 
-// ==================== HELPER FUNCTIONS ====================
-
-// Check if user is logged in
-async function isUserLoggedIn(chatId) {
-  // Check if user has explicitly logged out
-  if (loggedOutUsers.has(chatId.toString())) {
-    return false;
-  }
-  
-  // Check if user exists and has chatId
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  return !!user;
-}
-
-// Check if user is logged in AND not banned
-async function canUserAccessAccount(chatId) {
-  if (!await isUserLoggedIn(chatId)) {
-    return false;
-  }
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (!user) return false;
-  if (user.banned) return false;
-  
-  return true;
-}
-
-// Get user data if logged in
-async function getLoggedInUser(chatId) {
-  if (!await isUserLoggedIn(chatId)) {
-    return null;
-  }
-  
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
-  
-  if (!user || user.banned) {
-    return null;
-  }
-  
-  return user;
-}
-
-// Get user by member ID
-async function getUserByMemberId(memberId) {
-  const users = await loadData(USERS_FILE);
-  return users.find(u => u.memberId === memberId);
-}
-
-// Get active support chat for user
-async function getActiveSupportChat(userId) {
-  const supportChats = await loadData(SUPPORT_CHATS_FILE);
-  return supportChats.find(chat => 
-    (chat.userId === userId || chat.userId === `LOGGED_OUT_${userId}`) && 
-    chat.status === 'active'
-  );
-}
-
-// Send notification to user (works even if logged out)
-async function sendUserNotification(memberId, message) {
-  try {
-    const user = await getUserByMemberId(memberId);
-    if (user && user.chatId) {
-      await bot.sendMessage(user.chatId, message);
-      return true;
-    }
-  } catch (error) {
-    console.log('Could not send notification to user:', error.message);
-  }
-  return false;
-}
-
 // ==================== BOT COMMANDS ====================
 
 // Start command - Available to everyone
@@ -398,9 +562,148 @@ bot.onText(/\/start/, async (msg) => {
   await bot.sendMessage(chatId, fakeMessage);
 });
 
-// Support command - Available to everyone (ENHANCED)
+// Logout command
+bot.onText(/\/logout/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ You are not logged in.');
+    return;
+  }
+  
+  // Mark user as logged out
+  loggedOutUsers.add(chatId.toString());
+  
+  // Clear any active session
+  if (userSessions[chatId]) {
+    delete userSessions[chatId];
+  }
+  
+  await bot.sendMessage(chatId,
+    `✅ **Logged Out Successfully**\n\n` +
+    `You have been logged out from ${user.name} (${user.memberId}).\n\n` +
+    `To login again, use:\n` +
+    `/login - If you remember your credentials\n` +
+    `/support - If you need help logging in\n\n` +
+    `Note: You can still use /support while logged out.`
+  );
+});
+
+// Inbox command to view offline messages
+bot.onText(/\/inbox/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const users = await loadData(USERS_FILE);
+  const userIndex = users.findIndex(u => u.memberId === user.memberId);
+  
+  if (userIndex === -1) {
+    await bot.sendMessage(chatId, '❌ User not found.');
+    return;
+  }
+  
+  if (!users[userIndex].offlineMessages || users[userIndex].offlineMessages.length === 0) {
+    await bot.sendMessage(chatId, '📭 Your inbox is empty.');
+    return;
+  }
+  
+  const offlineMessages = users[userIndex].offlineMessages;
+  const unreadMessages = offlineMessages.filter(msg => !msg.read);
+  
+  let message = `📬 **Your Inbox**\n\n`;
+  message += `Total Messages: ${offlineMessages.length}\n`;
+  message += `Unread Messages: ${unreadMessages.length}\n\n`;
+  
+  // Show last 5 messages
+  const recentMessages = offlineMessages.slice(-5).reverse();
+  
+  recentMessages.forEach((msg, index) => {
+    const date = new Date(msg.timestamp).toLocaleDateString();
+    const readStatus = msg.read ? '✅ Read' : '🆕 Unread';
+    const messagePreview = msg.message.length > 50 ? 
+      msg.message.substring(0, 50) + '...' : msg.message;
+    
+    message += `${index + 1}. ${readStatus} (${date})\n`;
+    message += `   ${messagePreview}\n\n`;
+  });
+  
+  if (offlineMessages.length > 5) {
+    message += `... and ${offlineMessages.length - 5} more messages\n\n`;
+  }
+  
+  message += `**Commands:**\n`;
+  message += `/readmsgs - Mark all as read\n`;
+  message += `/clearmsgs - Clear all messages\n`;
+  
+  await bot.sendMessage(chatId, message);
+  
+  // Mark messages as read when user views inbox
+  if (unreadMessages.length > 0) {
+    users[userIndex].offlineMessages.forEach(msg => {
+      msg.read = true;
+    });
+    await saveData(USERS_FILE, users);
+  }
+});
+
+// Mark all messages as read
+bot.onText(/\/readmsgs/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const users = await loadData(USERS_FILE);
+  const userIndex = users.findIndex(u => u.memberId === user.memberId);
+  
+  if (userIndex !== -1 && users[userIndex].offlineMessages) {
+    users[userIndex].offlineMessages.forEach(msg => {
+      msg.read = true;
+    });
+    await saveData(USERS_FILE, users);
+    await bot.sendMessage(chatId, '✅ All messages marked as read.');
+  }
+});
+
+// Clear all messages
+bot.onText(/\/clearmsgs/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  const users = await loadData(USERS_FILE);
+  const userIndex = users.findIndex(u => u.memberId === user.memberId);
+  
+  if (userIndex !== -1) {
+    users[userIndex].offlineMessages = [];
+    await saveData(USERS_FILE, users);
+    await bot.sendMessage(chatId, '✅ All messages cleared.');
+  }
+});
+
+// Enhanced support system that works for everyone
 bot.onText(/\/support/, async (msg) => {
   const chatId = msg.chat.id;
+  
+  // Clear any existing session
+  if (userSessions[chatId]) {
+    delete userSessions[chatId];
+  }
   
   // Check if user is logged in
   const isLoggedIn = await isUserLoggedIn(chatId);
@@ -458,56 +761,62 @@ bot.onText(/\/support/, async (msg) => {
       );
     }
   } else {
-    // Logged out user - check if they have an active chat
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.chatId === chatId.toString());
-    
-    if (user) {
-      // User exists but is logged out - check for active chat
-      const activeChat = await getActiveSupportChat(user.memberId);
-      
-      if (activeChat) {
-        // Continue existing chat
-        userSessions[chatId] = {
-          step: 'support_chat',
-          data: {
-            memberId: user.memberId,
-            userName: user.name,
-            chatId: activeChat.id,
-            isLoggedOut: true
-          }
-        };
-        
-        await bot.sendMessage(chatId,
-          `💬 **Support Chat (Active)**\n\n` +
-          `You have an active support conversation.\n` +
-          `Type your message below:\n\n` +
-          `Last message from support: "${activeChat.messages.slice(-1)[0]?.message || 'No messages yet'}"\n\n` +
-          `Type /endsupport to end this chat\n` +
-          `Note: You are logged out. You can still chat with support.`
-        );
-        return;
-      }
-    }
-    
-    // Start new support chat for logged out user
+    // Universal support for everyone (logged out or no account)
     userSessions[chatId] = {
-      step: 'support_loggedout_topic',
+      step: 'universal_support_choice',
       data: {
         chatId: chatId
       }
     };
     
     await bot.sendMessage(chatId,
-      `🆘 **Login/Account Support**\n\n` +
-      `You are currently logged out.\n\n` +
-      `Please select your issue:\n\n` +
-      `1️⃣ Forgot Password\n` +
-      `2️⃣ Can't Login\n` +
-      `3️⃣ Account Recovery\n` +
-      `4️⃣ Other Login Issue\n\n` +
-      `Reply with the number (1-4):`
+      `🆘 **Universal Support Center**\n\n` +
+      `Welcome! We're here to help you with:\n\n` +
+      `1️⃣ **Account Issues**\n` +
+      `   - Can't login\n` +
+      `   - Forgot password\n` +
+      `   - Account recovery\n\n` +
+      `2️⃣ **General Questions**\n` +
+      `   - How to invest\n` +
+      `   - How withdrawals work\n` +
+      `   - Referral program\n\n` +
+      `3️⃣ **Technical Problems**\n` +
+      `   - Bot not responding\n` +
+      `   - Payment issues\n` +
+      `   - Other problems\n\n` +
+      `4️⃣ **Create New Account**\n` +
+      `   - Registration help\n` +
+      `   - Investment guidance\n\n` +
+      `**Reply with number (1-4):**`
     );
+  }
+});
+
+// End support chat
+bot.onText(/\/endsupport/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const session = userSessions[chatId];
+  if (session && (session.step === 'support_chat' || session.step === 'support_loggedout_chat' || session.step === 'universal_support_chat')) {
+    const supportChats = await loadData(SUPPORT_CHATS_FILE);
+    const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+    
+    if (chatIndex !== -1) {
+      supportChats[chatIndex].status = 'closed';
+      supportChats[chatIndex].updatedAt = new Date().toISOString();
+      supportChats[chatIndex].closedBy = 'user';
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
+    }
+    
+    delete userSessions[chatId];
+    
+    await bot.sendMessage(chatId,
+      `✅ **Support Chat Ended**\n\n` +
+      `Thank you for contacting support.\n` +
+      `Use /support if you need help again.`
+    );
+  } else {
+    await bot.sendMessage(chatId, '❌ No active support chat to end.');
   }
 });
 
@@ -706,7 +1015,9 @@ bot.on('message', async (msg) => {
         activeInvestments: 0,
         joinedDate: new Date().toISOString(),
         lastLogin: new Date().toISOString(),
-        banned: false
+        banned: false,
+        botBlocked: false,
+        offlineMessages: []
       };
       
       users.push(newUser);
@@ -851,18 +1162,320 @@ bot.on('message', async (msg) => {
                             `💰 Balance: ${formatCurrency(user.balance || 0)}\n` +
                             `📈 Total Earned: ${formatCurrency(user.totalEarned || 0)}\n` +
                             `👥 Referrals: ${user.referrals || 0}\n` +
-                            `🔗 Your Code: ${user.referralCode}\n\n` +
-                            `📋 **Quick Commands:**\n` +
-                            `/invest - Make investment\n` +
-                            `/earnings - View earnings\n` +
-                            `/viewearnings MEMBER_ID - View others ($1)\n` +
-                            `/withdraw - Withdraw funds\n` +
-                            `/referral - Share & earn 10%\n` +
-                            `/profile - Account details\n` +
-                            `/support - Contact support\n` +
-                            `/logout - Logout`;
+                            `🔗 Your Code: ${user.referralCode}\n\n`;
+      
+      // Check for offline messages
+      if (user.offlineMessages && user.offlineMessages.length > 0) {
+        const unreadMessages = user.offlineMessages.filter(msg => !msg.read);
+        
+        if (unreadMessages.length > 0) {
+          welcomeMessage += `📬 **You have ${unreadMessages.length} unread message(s)**\n`;
+          welcomeMessage += `Use /inbox to view your messages\n\n`;
+        }
+      }
+      
+      welcomeMessage += `📋 **Quick Commands:**\n` +
+                        `/invest - Make investment\n` +
+                        `/earnings - View earnings\n` +
+                        `/viewearnings MEMBER_ID - View others ($1)\n` +
+                        `/withdraw - Withdraw funds\n` +
+                        `/referral - Share & earn 10%\n` +
+                        `/profile - Account details\n` +
+                        `/support - Contact support\n` +
+                        `/logout - Logout`;
       
       await bot.sendMessage(chatId, welcomeMessage);
+    }
+    
+    // Handle universal support
+    else if (session.step === 'universal_support_choice') {
+      const choice = parseInt(text);
+      
+      if (isNaN(choice) || choice < 1 || choice > 4) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-4:');
+        return;
+      }
+      
+      const choices = [
+        'Account Issues',
+        'General Questions',
+        'Technical Problems',
+        'Create New Account'
+      ];
+      
+      session.data.topic = choices[choice - 1];
+      session.step = 'universal_support_message';
+      
+      await bot.sendMessage(chatId,
+        `✅ Topic: ${session.data.topic}\n\n` +
+        `Please describe your issue in detail:\n\n` +
+        `**Include these if relevant:**\n` +
+        `• Member ID (if you have one)\n` +
+        `• Your name\n` +
+        `• Email address\n` +
+        `• Screenshot details\n\n` +
+        `Type your message below:`
+      );
+    }
+    else if (session.step === 'universal_support_message') {
+      // Create support chat for user without account
+      const supportChats = await loadData(SUPPORT_CHATS_FILE);
+      
+      const chatIdStr = `CHAT-NOACC-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+      
+      const newChat = {
+        id: chatIdStr,
+        userId: `NO_ACCOUNT_${chatId}`,
+        userName: `User without account (Chat ID: ${chatId})`,
+        userChatId: chatId.toString(),
+        topic: session.data.topic,
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [{
+          sender: 'user',
+          message: text,
+          timestamp: new Date().toISOString()
+        }],
+        adminReplied: false,
+        noAccount: true
+      };
+      
+      supportChats.push(newChat);
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      
+      session.step = 'universal_support_chat';
+      session.data.chatId = chatIdStr;
+      
+      await bot.sendMessage(chatId,
+        `✅ **Support Request Sent**\n\n` +
+        `Support Ticket ID: ${chatIdStr}\n` +
+        `Topic: ${session.data.topic}\n\n` +
+        `Our support team will respond within 15 minutes.\n` +
+        `You don't need an account to continue chatting.\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `🆘 **New Support (No Account)**\n\n` +
+                            `Chat ID: ${chatIdStr}\n` +
+                            `User: No account (Chat ID: ${chatId})\n` +
+                            `Topic: ${session.data.topic}\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${chatIdStr} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    else if (session.step === 'universal_support_chat') {
+      // Handle messages from users without accounts
+      const supportChats = await loadData(SUPPORT_CHATS_FILE);
+      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+      
+      if (chatIndex === -1) {
+        await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      supportChats[chatIndex].messages.push({
+        sender: 'user',
+        message: text,
+        timestamp: new Date().toISOString()
+      });
+      supportChats[chatIndex].updatedAt = new Date().toISOString();
+      supportChats[chatIndex].adminReplied = false;
+      
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      
+      await bot.sendMessage(chatId,
+        `✅ **Message sent**\n\n` +
+        `Support team will respond shortly.\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const chat = supportChats[chatIndex];
+        const adminMessage = `💬 **No Account User Message**\n\n` +
+                            `Chat ID: ${session.data.chatId}\n` +
+                            `User: ${chat.userName}\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${session.data.chatId} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    
+    // Handle regular support
+    else if (session.step === 'support_topic') {
+      const topicNumber = parseInt(text);
+      const topics = [
+        'Account Issues',
+        'Investment Problems',
+        'Withdrawal Help',
+        'Referral Issues',
+        'Other'
+      ];
+      
+      if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 5) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-5:');
+        return;
+      }
+      
+      const topic = topics[topicNumber - 1];
+      session.data.topic = topic;
+      session.step = 'support_message';
+      
+      await bot.sendMessage(chatId,
+        `✅ Topic: ${topic}\n\n` +
+        `Please describe your issue in detail:\n` +
+        `Type your message below:`
+      );
+    }
+    else if (session.step === 'support_message') {
+      // Create or find support chat
+      const supportChats = await loadData(SUPPORT_CHATS_FILE);
+      
+      // Find existing active chat for this user
+      const chatIndex = supportChats.findIndex(chat => 
+        chat.userId === session.data.memberId && 
+        chat.status === 'active'
+      );
+      
+      let chatIdStr;
+      
+      if (chatIndex !== -1) {
+        // Continue existing chat
+        chatIdStr = supportChats[chatIndex].id;
+        supportChats[chatIndex].messages.push({
+          sender: 'user',
+          message: text,
+          timestamp: new Date().toISOString()
+        });
+        supportChats[chatIndex].updatedAt = new Date().toISOString();
+        supportChats[chatIndex].adminReplied = false;
+      } else {
+        // Create new support chat
+        chatIdStr = `CHAT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+        
+        const newChat = {
+          id: chatIdStr,
+          userId: session.data.memberId,
+          userName: session.data.userName,
+          topic: session.data.topic,
+          status: 'active',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          messages: [{
+            sender: 'user',
+            message: text,
+            timestamp: new Date().toISOString()
+          }],
+          adminReplied: false
+        };
+        
+        supportChats.push(newChat);
+      }
+      
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      
+      session.step = 'support_chat';
+      session.data.chatId = chatIdStr;
+      
+      await bot.sendMessage(chatId,
+        `✅ **Support Request Sent**\n\n` +
+        `Support Ticket ID: ${chatIdStr}\n` +
+        `Topic: ${session.data.topic}\n\n` +
+        `Our support team will respond within 15 minutes.\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const adminMessage = `🆘 **New Support Request**\n\n` +
+                            `Chat ID: ${chatIdStr}\n` +
+                            `User: ${session.data.userName} (${session.data.memberId})\n` +
+                            `Topic: ${session.data.topic}\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${chatIdStr} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
+    }
+    else if (session.step === 'support_chat') {
+      // Check if chat is closed
+      const supportChats = await loadData(SUPPORT_CHATS_FILE);
+      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+      
+      if (chatIndex === -1) {
+        await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      if (supportChats[chatIndex].status === 'closed') {
+        await bot.sendMessage(chatId, '❌ This support chat has been closed by admin.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      supportChats[chatIndex].messages.push({
+        sender: 'user',
+        message: text,
+        timestamp: new Date().toISOString()
+      });
+      supportChats[chatIndex].updatedAt = new Date().toISOString();
+      supportChats[chatIndex].adminReplied = false;
+      
+      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      
+      await bot.sendMessage(chatId,
+        `✅ **Message sent**\n\n` +
+        `Support team will respond shortly.\n\n` +
+        `Type /endsupport to end chat`
+      );
+      
+      // Notify admins
+      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
+      if (adminIds.length > 0) {
+        const chat = supportChats[chatIndex];
+        const adminMessage = `💬 **New Support Message**\n\n` +
+                            `Chat ID: ${session.data.chatId}\n` +
+                            `User: ${chat.userName} (${chat.userId})\n` +
+                            `Message: ${text}\n\n` +
+                            `**Reply:** /replychat ${session.data.chatId} your_message`;
+        
+        for (const adminId of adminIds) {
+          try {
+            await bot.sendMessage(adminId, adminMessage);
+          } catch (error) {
+            console.log('Could not notify admin:', adminId);
+          }
+        }
+      }
     }
     
     // Handle support for logged out users
@@ -1133,194 +1746,10 @@ bot.on('message', async (msg) => {
       }
     }
     
-    // Handle regular support
-    else if (session.step === 'support_topic') {
-      const topicNumber = parseInt(text);
-      const topics = [
-        'Account Issues',
-        'Investment Problems',
-        'Withdrawal Help',
-        'Referral Issues',
-        'Other'
-      ];
-      
-      if (isNaN(topicNumber) || topicNumber < 1 || topicNumber > 5) {
-        await bot.sendMessage(chatId, '❌ Please enter a number between 1-5:');
-        return;
-      }
-      
-      const topic = topics[topicNumber - 1];
-      session.data.topic = topic;
-      session.step = 'support_message';
-      
-      await bot.sendMessage(chatId,
-        `✅ Topic: ${topic}\n\n` +
-        `Please describe your issue in detail:\n` +
-        `Type your message below:`
-      );
-    }
-    else if (session.step === 'support_message') {
-      // Create or find support chat
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      
-      // Find existing active chat for this user
-      const chatIndex = supportChats.findIndex(chat => 
-        chat.userId === session.data.memberId && 
-        chat.status === 'active'
-      );
-      
-      let chatIdStr;
-      
-      if (chatIndex !== -1) {
-        // Continue existing chat
-        chatIdStr = supportChats[chatIndex].id;
-        supportChats[chatIndex].messages.push({
-          sender: 'user',
-          message: text,
-          timestamp: new Date().toISOString()
-        });
-        supportChats[chatIndex].updatedAt = new Date().toISOString();
-        supportChats[chatIndex].adminReplied = false;
-      } else {
-        // Create new support chat
-        chatIdStr = `CHAT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
-        
-        const newChat = {
-          id: chatIdStr,
-          userId: session.data.memberId,
-          userName: session.data.userName,
-          topic: session.data.topic,
-          status: 'active',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          messages: [{
-            sender: 'user',
-            message: text,
-            timestamp: new Date().toISOString()
-          }],
-          adminReplied: false
-        };
-        
-        supportChats.push(newChat);
-      }
-      
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
-      
-      session.step = 'support_chat';
-      session.data.chatId = chatIdStr;
-      
-      await bot.sendMessage(chatId,
-        `✅ **Support Request Sent**\n\n` +
-        `Support Ticket ID: ${chatIdStr}\n` +
-        `Topic: ${session.data.topic}\n\n` +
-        `Our support team will respond within 15 minutes.\n\n` +
-        `Type /endsupport to end chat`
-      );
-      
-      // Notify admins
-      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
-      if (adminIds.length > 0) {
-        const adminMessage = `🆘 **New Support Request**\n\n` +
-                            `Chat ID: ${chatIdStr}\n` +
-                            `User: ${session.data.userName} (${session.data.memberId})\n` +
-                            `Topic: ${session.data.topic}\n` +
-                            `Message: ${text}\n\n` +
-                            `**Reply:** /replychat ${chatIdStr} your_message`;
-        
-        for (const adminId of adminIds) {
-          try {
-            await bot.sendMessage(adminId, adminMessage);
-          } catch (error) {
-            console.log('Could not notify admin:', adminId);
-          }
-        }
-      }
-    }
-    else if (session.step === 'support_chat') {
-      // Check if chat is closed
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
-      
-      if (chatIndex === -1) {
-        await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
-        delete userSessions[chatId];
-        return;
-      }
-      
-      if (supportChats[chatIndex].status === 'closed') {
-        await bot.sendMessage(chatId, '❌ This support chat has been closed by admin.');
-        delete userSessions[chatId];
-        return;
-      }
-      
-      supportChats[chatIndex].messages.push({
-        sender: 'user',
-        message: text,
-        timestamp: new Date().toISOString()
-      });
-      supportChats[chatIndex].updatedAt = new Date().toISOString();
-      supportChats[chatIndex].adminReplied = false;
-      
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
-      
-      await bot.sendMessage(chatId,
-        `✅ **Message sent**\n\n` +
-        `Support team will respond shortly.\n\n` +
-        `Type /endsupport to end chat`
-      );
-      
-      // Notify admins
-      const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
-      if (adminIds.length > 0) {
-        const chat = supportChats[chatIndex];
-        const adminMessage = `💬 **New Support Message**\n\n` +
-                            `Chat ID: ${session.data.chatId}\n` +
-                            `User: ${chat.userName} (${chat.userId})\n` +
-                            `Message: ${text}\n\n` +
-                            `**Reply:** /replychat ${session.data.chatId} your_message`;
-        
-        for (const adminId of adminIds) {
-          try {
-            await bot.sendMessage(adminId, adminMessage);
-          } catch (error) {
-            console.log('Could not notify admin:', adminId);
-          }
-        }
-      }
-    }
-    
   } catch (error) {
     console.log('Message handling error:', error.message);
     await bot.sendMessage(chatId, '❌ An error occurred. Please try again.');
     delete userSessions[chatId];
-  }
-});
-
-// End support chat
-bot.onText(/\/endsupport/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  const session = userSessions[chatId];
-  if (session && (session.step === 'support_chat' || session.step === 'support_loggedout_chat')) {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
-    
-    if (chatIndex !== -1) {
-      supportChats[chatIndex].status = 'closed';
-      supportChats[chatIndex].updatedAt = new Date().toISOString();
-      supportChats[chatIndex].closedBy = 'user';
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
-    }
-    
-    delete userSessions[chatId];
-    
-    await bot.sendMessage(chatId,
-      `✅ **Support Chat Ended**\n\n` +
-      `Thank you for contacting support.\n` +
-      `Use /support if you need help again.`
-    );
-  } else {
-    await bot.sendMessage(chatId, '❌ No active support chat to end.');
   }
 });
 
@@ -1640,91 +2069,6 @@ bot.onText(/\/unsuspend (.+)/, async (msg, match) => {
   }
 });
 
-// Handle admin confirmation sessions
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-  
-  if (!text) return;
-  
-  const adminSession = adminSessions[chatId];
-  if (!adminSession) return;
-  
-  try {
-    if (adminSession.step === 'confirm_delete') {
-      if (text === `CONFIRM DELETE ${adminSession.data.memberId}`) {
-        const users = await loadData(USERS_FILE);
-        const userIndex = users.findIndex(u => u.memberId === adminSession.data.memberId);
-        
-        if (userIndex !== -1) {
-          const user = users[userIndex];
-          
-          // Remove user
-          users.splice(userIndex, 1);
-          await saveData(USERS_FILE, users);
-          
-          // Send notification to user
-          await sendUserNotification(adminSession.data.memberId,
-            `❌ **Account Deleted**\n\n` +
-            `Your account has been deleted by admin.\n\n` +
-            `All your data has been removed from our system.\n` +
-            `If you believe this is an error, please contact support.\n\n` +
-            `Thank you for using Starlife Advert.`
-          );
-          
-          await bot.sendMessage(chatId,
-            `✅ **User Deleted**\n\n` +
-            `User: ${user.name} (${adminSession.data.memberId})\n` +
-            `Account has been permanently deleted.`
-          );
-          
-          // Record deletion
-          const supportChats = await loadData(SUPPORT_CHATS_FILE);
-          const deleteChat = {
-            id: `DELETE-${Date.now()}`,
-            userId: adminSession.data.memberId,
-            userName: user.name,
-            topic: 'Account Deletion',
-            status: 'completed',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            messages: [{
-              sender: 'admin',
-              message: `Account deleted by admin`,
-              timestamp: new Date().toISOString(),
-              adminId: chatId.toString()
-            }],
-            adminReplied: true,
-            isSystemMessage: true
-          };
-          
-          supportChats.push(deleteChat);
-          await saveData(SUPPORT_CHATS_FILE, supportChats);
-          
-        } else {
-          await bot.sendMessage(chatId, `❌ User ${adminSession.data.memberId} not found.`);
-        }
-        
-        delete adminSessions[chatId];
-        
-      } else if (text === 'CANCEL') {
-        await bot.sendMessage(chatId, '❌ User deletion cancelled.');
-        delete adminSessions[chatId];
-      } else {
-        await bot.sendMessage(chatId,
-          `⚠️ **Invalid Confirmation**\n\n` +
-          `Type "CONFIRM DELETE ${adminSession.data.memberId}" to proceed,\n` +
-          `or type "CANCEL" to cancel.`
-        );
-      }
-    }
-  } catch (error) {
-    console.log('Admin session error:', error.message);
-    await bot.sendMessage(chatId, '❌ Error processing request.');
-    delete adminSessions[chatId];
-  }
-});
-
 // Message user directly - ADMIN
 bot.onText(/\/message (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
@@ -1774,70 +2118,6 @@ bot.onText(/\/message (.+)/, async (msg, match) => {
   await sendDirectMessageToUser(chatId, memberId, messageText);
 });
 
-// Helper function to send direct message to user
-async function sendDirectMessageToUser(adminChatId, memberId, messageText) {
-  try {
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.memberId === memberId);
-    
-    if (!user) {
-      await bot.sendMessage(adminChatId, `❌ User ${memberId} not found.`);
-      return;
-    }
-    
-    // Try to send message to user
-    const sent = await sendUserNotification(memberId,
-      `📨 **Message from Starlife Advert Admin**\n\n` +
-      `${messageText}\n\n` +
-      `💼 Management Team`
-    );
-    
-    if (sent) {
-      await bot.sendMessage(adminChatId,
-        `✅ **Message sent to ${user.name} (${memberId})**\n\n` +
-        `Message: "${messageText}"`
-      );
-    } else {
-      await bot.sendMessage(adminChatId,
-        `⚠️ **Message saved but user not notified**\n\n` +
-        `User: ${user.name} (${memberId})\n` +
-        `Message: "${messageText}"\n\n` +
-        `User is logged out. They will see this message when they login and use /support.`
-      );
-    }
-    
-    // Record this message in support chats
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const adminMessageChat = {
-      id: `ADMIN-MSG-${Date.now()}`,
-      userId: memberId,
-      userName: user.name,
-      topic: 'Direct Admin Message',
-      status: 'sent',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      messages: [{
-        sender: 'admin',
-        message: messageText,
-        timestamp: new Date().toISOString(),
-        adminId: adminChatId.toString()
-      }],
-      adminReplied: true,
-      isDirectMessage: true
-    };
-    
-    supportChats.push(adminMessageChat);
-    await saveData(SUPPORT_CHATS_FILE, supportChats);
-    
-  } catch (error) {
-    console.log('Error sending direct message:', error.message);
-    await bot.sendMessage(adminChatId,
-      `❌ **Failed to send message**\n\n` +
-      `Error: ${error.message}`
-    );
-  }
-}
-
 // Support chats list - ADMIN
 bot.onText(/\/supportchats/, async (msg) => {
   const chatId = msg.chat.id;
@@ -1876,7 +2156,8 @@ bot.onText(/\/supportchats/, async (msg) => {
         
         const messageCount = chat.messages ? chat.messages.length : 0;
         const isLoggedOut = chat.isLoggedOut || false;
-        const statusIcon = isLoggedOut ? '🚪' : '👤';
+        const noAccount = chat.noAccount || false;
+        const statusIcon = noAccount ? '🚫' : (isLoggedOut ? '🚪' : '👤');
         
         message += `${index + 1}. ${statusIcon} **${userName}**\n`;
         message += `   🆔: ${chat.id}\n`;
@@ -1929,6 +2210,7 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
     }
     
     const isLoggedOut = chat.isLoggedOut || false;
+    const noAccount = chat.noAccount || false;
     const userName = chat.userName || 'Unknown User';
     const userId = chat.userId || 'Unknown ID';
     
@@ -1939,6 +2221,7 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
     message += `📝 Topic: ${chat.topic}\n`;
     message += `📊 Status: ${chat.status === 'active' ? '🟢 Active' : '🔴 Closed'}\n`;
     message += `🚪 Logged Out: ${isLoggedOut ? 'Yes' : 'No'}\n`;
+    message += `🚫 No Account: ${noAccount ? 'Yes' : 'No'}\n`;
     message += `📅 Created: ${new Date(chat.createdAt).toLocaleString()}\n`;
     message += `🕒 Updated: ${new Date(chat.updatedAt).toLocaleString()}\n`;
     message += `💬 Messages: ${chat.messages ? chat.messages.length : 0}\n\n`;
@@ -2053,26 +2336,38 @@ bot.onText(/\/replychat (.+)/, async (msg, match) => {
     
     // Try to send message to user
     try {
-      // Extract member ID from chat user ID
-      let memberId = chat.userId;
-      if (memberId.startsWith('LOGGED_OUT_')) {
-        memberId = memberId.replace('LOGGED_OUT_', '');
-      } else if (memberId.startsWith('LOGGED_OUT_CHAT_')) {
-        // This is a chat-based ID, not a member ID
-        // User will see message when they use /support
-        console.log('Cannot send to logged out chat-based user');
-        return;
+      // Check if user has an account
+      if (chat.noAccount) {
+        // User without account - send to their chat ID
+        const userChatId = chat.userChatId;
+        if (userChatId) {
+          await bot.sendMessage(userChatId,
+            `👨‍💼 **Support Response**\n\n` +
+            `Topic: ${chat.topic}\n` +
+            `Support: "${replyMessage}"\n\n` +
+            `Continue the conversation by typing your response.\n` +
+            `Use /endsupport to close chat.`
+          );
+          console.log(`Message sent to user without account: ${userChatId}`);
+        }
+      } else {
+        // User with account
+        let memberId = chat.userId;
+        if (memberId.startsWith('LOGGED_OUT_')) {
+          memberId = memberId.replace('LOGGED_OUT_', '');
+        }
+        
+        if (memberId && !memberId.startsWith('LOGGED_OUT_CHAT_')) {
+          // Send notification to user
+          await sendUserNotification(memberId,
+            `👨‍💼 **Support Response**\n\n` +
+            `Topic: ${chat.topic}\n` +
+            `Support: "${replyMessage}"\n\n` +
+            `Continue the conversation by typing your response.\n` +
+            `Use /endsupport to close chat.`
+          );
+        }
       }
-      
-      // Send notification to user
-      await sendUserNotification(memberId,
-        `👨‍💼 **Support Response**\n\n` +
-        `Topic: ${chat.topic}\n` +
-        `Support: "${replyMessage}"\n\n` +
-        `Continue the conversation by typing your response.\n` +
-        `Use /endsupport to close chat.`
-      );
-      
     } catch (error) {
       console.log('Could not notify user:', error.message);
     }
@@ -2128,18 +2423,32 @@ bot.onText(/\/closechat (.+)/, async (msg, match) => {
     
     // Try to notify user
     try {
-      let memberId = chat.userId;
-      if (memberId.startsWith('LOGGED_OUT_')) {
-        memberId = memberId.replace('LOGGED_OUT_', '');
-      }
-      
-      if (memberId && !memberId.startsWith('LOGGED_OUT_CHAT_')) {
-        await sendUserNotification(memberId,
-          `💬 **Support Chat Closed**\n\n` +
-          `Your support chat has been closed by our team.\n` +
-          `Thank you for contacting us!\n\n` +
-          `If you need further assistance, use /support again.`
-        );
+      if (chat.noAccount) {
+        // User without account
+        const userChatId = chat.userChatId;
+        if (userChatId) {
+          await bot.sendMessage(userChatId,
+            `💬 **Support Chat Closed**\n\n` +
+            `Your support chat has been closed by our team.\n` +
+            `Thank you for contacting us!\n\n` +
+            `If you need further assistance, use /support again.`
+          );
+        }
+      } else {
+        // User with account
+        let memberId = chat.userId;
+        if (memberId.startsWith('LOGGED_OUT_')) {
+          memberId = memberId.replace('LOGGED_OUT_', '');
+        }
+        
+        if (memberId && !memberId.startsWith('LOGGED_OUT_CHAT_')) {
+          await sendUserNotification(memberId,
+            `💬 **Support Chat Closed**\n\n` +
+            `Your support chat has been closed by our team.\n` +
+            `Thank you for contacting us!\n\n` +
+            `If you need further assistance, use /support again.`
+          );
+        }
       }
     } catch (error) {
       console.log('Could not notify user about chat closure');
@@ -2147,6 +2456,101 @@ bot.onText(/\/closechat (.+)/, async (msg, match) => {
   } catch (error) {
     console.log('Error in /closechat:', error.message);
     await bot.sendMessage(chatId, '❌ Error closing chat.');
+  }
+});
+
+// Handle admin confirmation sessions
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
+  
+  if (!text) return;
+  
+  const adminSession = adminSessions[chatId];
+  if (!adminSession) return;
+  
+  try {
+    if (adminSession.step === 'confirm_delete') {
+      if (text === `CONFIRM DELETE ${adminSession.data.memberId}`) {
+        const users = await loadData(USERS_FILE);
+        const userIndex = users.findIndex(u => u.memberId === adminSession.data.memberId);
+        
+        if (userIndex !== -1) {
+          const user = users[userIndex];
+          
+          // Remove user
+          users.splice(userIndex, 1);
+          await saveData(USERS_FILE, users);
+          
+          // Send notification to user
+          await sendUserNotification(adminSession.data.memberId,
+            `❌ **Account Deleted**\n\n` +
+            `Your account has been deleted by admin.\n\n` +
+            `All your data has been removed from our system.\n` +
+            `If you believe this is an error, please contact support.\n\n` +
+            `Thank you for using Starlife Advert.`
+          );
+          
+          await bot.sendMessage(chatId,
+            `✅ **User Deleted**\n\n` +
+            `User: ${user.name} (${adminSession.data.memberId})\n` +
+            `Account has been permanently deleted.`
+          );
+          
+          // Record deletion
+          const supportChats = await loadData(SUPPORT_CHATS_FILE);
+          const deleteChat = {
+            id: `DELETE-${Date.now()}`,
+            userId: adminSession.data.memberId,
+            userName: user.name,
+            topic: 'Account Deletion',
+            status: 'completed',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            messages: [{
+              sender: 'admin',
+              message: `Account deleted by admin`,
+              timestamp: new Date().toISOString(),
+              adminId: chatId.toString()
+            }],
+            adminReplied: true,
+            isSystemMessage: true
+          };
+          
+          supportChats.push(deleteChat);
+          await saveData(SUPPORT_CHATS_FILE, supportChats);
+          
+        } else {
+          await bot.sendMessage(chatId, `❌ User ${adminSession.data.memberId} not found.`);
+        }
+        
+        delete adminSessions[chatId];
+        
+      } else if (text === 'CANCEL') {
+        await bot.sendMessage(chatId, '❌ User deletion cancelled.');
+        delete adminSessions[chatId];
+      } else {
+        await bot.sendMessage(chatId,
+          `⚠️ **Invalid Confirmation**\n\n` +
+          `Type "CONFIRM DELETE ${adminSession.data.memberId}" to proceed,\n` +
+          `or type "CANCEL" to cancel.`
+        );
+      }
+    }
+    else if (adminSession.step === 'admin_message_user') {
+      if (text === '/cancel') {
+        await bot.sendMessage(chatId, '❌ Message cancelled.');
+        delete adminSessions[chatId];
+        return;
+      }
+      
+      await sendDirectMessageToUser(chatId, adminSession.data.memberId, text);
+      delete adminSessions[chatId];
+    }
+  } catch (error) {
+    console.log('Admin session error:', error.message);
+    await bot.sendMessage(chatId, '❌ Error processing request.');
+    delete adminSessions[chatId];
   }
 });
 
@@ -2178,13 +2582,16 @@ bot.onText(/\/stats/, async (msg) => {
     const activeSupportChats = supportChats.filter(c => c.status === 'active').length;
     const paidReferrals = referrals.filter(ref => ref.status === 'paid').length;
     const totalWithdrawalFees = withdrawals.filter(w => w.status === 'approved').reduce((sum, w) => sum + (w.fee || 0), 0);
+    const offlineUsers = users.filter(u => u.chatId && loggedOutUsers.has(u.chatId)).length;
+    const blockedUsers = users.filter(u => u.botBlocked).length;
     
     const statsMessage = `📊 **System Statistics**\n\n` +
                         `**Users:**\n` +
                         `• Total Users: ${users.length}\n` +
                         `• Active Users: ${activeUsers}\n` +
                         `• Banned Users: ${users.length - activeUsers}\n` +
-                        `• Logged Out: ${loggedOutUsers.size}\n` +
+                        `• Logged Out: ${offlineUsers}\n` +
+                        `• Blocked Bot: ${blockedUsers}\n` +
                         `• Total Balance: ${formatCurrency(totalBalance)}\n\n` +
                         `**Investments:**\n` +
                         `• Total Investments: ${investments.length}\n` +
