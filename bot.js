@@ -848,8 +848,8 @@ bot.onText(/\/start/, async (msg) => {
                             `🔗 Your Code: ${user.referralCode}\n\n` +
                             `📋 **Quick Commands:**\n` +
                             `/invest - Make investment\n` +
-                            `/earnings - View earnings\n` +
-                            `/viewearnings MEMBER_ID - View others ($1)\n` +
+                            `/earnings - View YOUR earnings\n` +
+                            `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                             `/withdraw - Withdraw funds\n` +
                             `/referral - Share & earn 10%\n` +
                             `/profile - Account details\n` +
@@ -920,7 +920,7 @@ bot.onText(/\/invest/, async (msg) => {
   );
 });
 
-// Earnings command
+// Earnings command - View YOUR OWN earnings
 bot.onText(/\/earnings/, async (msg) => {
   const chatId = msg.chat.id;
   
@@ -951,6 +951,107 @@ bot.onText(/\/earnings/, async (msg) => {
   }
   
   await bot.sendMessage(chatId, message);
+});
+
+// View earnings of another user (paid feature - $1)
+bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const targetMemberId = match[1].toUpperCase();
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  // Check if user is trying to view their own earnings (should use /earnings instead)
+  if (targetMemberId === user.memberId) {
+    await bot.sendMessage(chatId, 
+      `ℹ️ To view your own earnings, use /earnings command instead.\n` +
+      `/viewearnings is for viewing other users' earnings (with $1 fee).`
+    );
+    return;
+  }
+  
+  // Check if user has enough balance ($1 fee)
+  const fee = 1.00;
+  if ((user.balance || 0) < fee) {
+    await bot.sendMessage(chatId,
+      `❌ **Insufficient Balance**\n\n` +
+      `Fee to view earnings: ${formatCurrency(fee)}\n` +
+      `Your balance: ${formatCurrency(user.balance || 0)}\n\n` +
+      `Please add funds to use this feature.`
+    );
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const targetUser = users.find(u => u.memberId === targetMemberId);
+    
+    if (!targetUser) {
+      await bot.sendMessage(chatId, `❌ User ${targetMemberId} not found.`);
+      return;
+    }
+    
+    // Deduct fee from user
+    const userIndex = users.findIndex(u => u.memberId === user.memberId);
+    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - fee;
+    await saveData(USERS_FILE, users);
+    
+    // Record transaction
+    const transactions = await loadData(TRANSACTIONS_FILE);
+    transactions.push({
+      id: `VIEW-EARN-${Date.now()}`,
+      memberId: user.memberId,
+      type: 'view_earnings_fee',
+      amount: -fee,
+      description: `Fee to view ${targetMemberId}'s earnings`,
+      date: new Date().toISOString()
+    });
+    await saveData(TRANSACTIONS_FILE, transactions);
+    
+    // Record earnings view
+    const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
+    earningsViews.push({
+      id: `VIEW-${Date.now()}`,
+      viewerId: user.memberId,
+      viewedId: targetMemberId,
+      fee: fee,
+      date: new Date().toISOString()
+    });
+    await saveData(EARNINGS_VIEWS_FILE, earningsViews);
+    
+    // Get target user's investments
+    const investments = await loadData(INVESTMENTS_FILE);
+    const targetInvestments = investments.filter(inv => inv.memberId === targetMemberId);
+    const activeInvestments = targetInvestments.filter(inv => inv.status === 'active');
+    
+    let message = `👤 **Earnings Report for ${targetUser.name} (${targetMemberId})**\n\n`;
+    message += `💰 Balance: ${formatCurrency(targetUser.balance || 0)}\n`;
+    message += `📊 Total Earned: ${formatCurrency(targetUser.totalEarned || 0)}\n`;
+    message += `💵 Total Invested: ${formatCurrency(targetUser.totalInvested || 0)}\n`;
+    message += `👥 Referral Earnings: ${formatCurrency(targetUser.referralEarnings || 0)}\n`;
+    message += `📈 Active Investments: ${activeInvestments.length}\n`;
+    message += `👥 Total Referrals: ${targetUser.referrals || 0}\n\n`;
+    
+    if (activeInvestments.length > 0) {
+      message += `**Active Investments:**\n`;
+      activeInvestments.forEach((inv, index) => {
+        message += `${index + 1}. ${formatCurrency(inv.amount)} - ${inv.daysActive || 0}/30 days\n`;
+      });
+    }
+    
+    message += `\n---\n`;
+    message += `Fee paid: ${formatCurrency(fee)}\n`;
+    message += `Your new balance: ${formatCurrency(users[userIndex].balance)}`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /viewearnings:', error.message);
+    await bot.sendMessage(chatId, '❌ Error viewing earnings.');
+  }
 });
 
 // Profile command - FIXED REFERRAL
@@ -1659,7 +1760,8 @@ bot.on('message', async (msg) => {
                        `🏢 Name: Starlife Advert US Agency\n\n` +
                        `**Quick Commands:**\n` +
                        `/invest - Make investment\n` +
-                       `/earnings - View earnings\n` +
+                       `/earnings - View YOUR earnings\n` +
+                       `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                        `/referral - Share & earn 10%\n` +
                        `/profile - Account details\n` +
                        `/support - Contact support\n\n` +
@@ -1744,8 +1846,8 @@ bot.on('message', async (msg) => {
       
       welcomeMessage += `📋 **Quick Commands:**\n` +
                         `/invest - Make investment\n` +
-                        `/earnings - View earnings\n` +
-                        `/viewearnings MEMBER_ID - View others ($1)\n` +
+                        `/earnings - View YOUR earnings\n` +
+                        `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                         `/withdraw - Withdraw funds\n` +
                         `/referral - Share & earn 10%\n` +
                         `/profile - Account details\n` +
@@ -2664,6 +2766,7 @@ bot.onText(/\/stats/, async (msg) => {
     const supportChats = await loadData(SUPPORT_CHATS_FILE);
     const referrals = await loadData(REFERRALS_FILE);
     const mediaFiles = await loadData(MEDIA_FILES_FILE);
+    const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
     
     const totalBalance = users.reduce((sum, user) => sum + parseFloat(user.balance || 0), 0);
     const totalInvested = users.reduce((sum, user) => sum + parseFloat(user.totalInvested || 0), 0);
@@ -2679,6 +2782,7 @@ bot.onText(/\/stats/, async (msg) => {
     const offlineUsers = users.filter(u => u.chatId && loggedOutUsers.has(u.chatId)).length;
     const blockedUsers = users.filter(u => u.botBlocked).length;
     const suspendedUsers = users.filter(u => u.banned).length;
+    const totalEarningsViewFees = earningsViews.reduce((sum, view) => sum + (view.fee || 0), 0);
     
     // Media stats
     const photoCount = mediaFiles.filter(m => m.fileType === 'photo').length;
@@ -2709,6 +2813,9 @@ bot.onText(/\/stats/, async (msg) => {
                         `• Total Referrals: ${referrals.length}\n` +
                         `• Paid Referrals: ${paidReferrals}\n` +
                         `• Total Bonus Paid: ${formatCurrency(totalReferralEarnings)}\n\n` +
+                        `**Earnings Views:**\n` +
+                        `• Total Views: ${earningsViews.length}\n` +
+                        `• Total Fees: ${formatCurrency(totalEarningsViewFees)}\n\n` +
                         `**Support:**\n` +
                         `• Active Chats: ${activeSupportChats}\n` +
                         `• Total Chats: ${supportChats.length}\n` +
@@ -2787,10 +2894,13 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
     const investments = await loadData(INVESTMENTS_FILE);
     const withdrawals = await loadData(WITHDRAWALS_FILE);
     const referrals = await loadData(REFERRALS_FILE);
+    const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
     
     const userInvestments = investments.filter(i => i.memberId === memberId);
     const userWithdrawals = withdrawals.filter(w => w.memberId === memberId);
     const userReferrals = referrals.filter(r => r.referrerId === memberId);
+    const userEarningsViews = earningsViews.filter(v => v.viewerId === memberId);
+    const viewedUserEarnings = earningsViews.filter(v => v.viewedId === memberId);
     const referredBy = user.referredBy ? `Referred by: ${user.referredBy}\n` : '';
     
     const message = `👤 **User Details**\n\n` +
@@ -2812,7 +2922,9 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `Referral Code: ${user.referralCode || 'N/A'}\n` +
                    `Investments: ${userInvestments.length}\n` +
                    `Withdrawals: ${userWithdrawals.length}\n` +
-                   `Referral Network: ${userReferrals.length}\n\n` +
+                   `Referral Network: ${userReferrals.length}\n` +
+                   `Earnings Views Made: ${userEarningsViews.length}\n` +
+                   `Earnings Views Received: ${viewedUserEarnings.length}\n\n` +
                    `**Actions:**\n` +
                    `💰 Add Balance: /addbalance ${memberId} AMOUNT\n` +
                    `🔐 Reset Pass: /resetpass ${memberId}\n` +
@@ -3640,6 +3752,311 @@ bot.onText(/\/manualinv (.+?) (.+)/, async (msg, match) => {
   } catch (error) {
     console.log('Error in /manualinv:', error.message);
     await bot.sendMessage(chatId, '❌ Error adding manual investment.');
+  }
+});
+
+// ==================== NEW MISSING ADMIN COMMANDS ====================
+
+// Deduct balance from user
+bot.onText(/\/deductbalance (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const amount = parseFloat(match[2]);
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  if (isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(chatId, '❌ Invalid amount. Use: /deductbalance USER_ID AMOUNT');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    if ((users[userIndex].balance || 0) < amount) {
+      await bot.sendMessage(chatId,
+        `❌ Insufficient balance.\n` +
+        `User has: ${formatCurrency(users[userIndex].balance || 0)}\n` +
+        `Trying to deduct: ${formatCurrency(amount)}`
+      );
+      return;
+    }
+    
+    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - amount;
+    await saveData(USERS_FILE, users);
+    
+    // Record transaction
+    const transactions = await loadData(TRANSACTIONS_FILE);
+    transactions.push({
+      id: `ADMIN-DEDUCT-${Date.now()}`,
+      memberId: memberId,
+      type: 'admin_deduct_balance',
+      amount: -amount,
+      description: `Admin deducted balance`,
+      date: new Date().toISOString(),
+      adminId: chatId.toString()
+    });
+    await saveData(TRANSACTIONS_FILE, transactions);
+    
+    await bot.sendMessage(chatId,
+      `✅ **Balance Deducted Successfully**\n\n` +
+      `User: ${users[userIndex].name} (${memberId})\n` +
+      `Amount Deducted: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency(users[userIndex].balance)}`
+    );
+    
+    // Notify user
+    await sendUserNotification(memberId,
+      `⚠️ **Balance Deducted by Admin**\n\n` +
+      `Amount: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency(users[userIndex].balance)}\n\n` +
+      `This was deducted by an administrator.`
+    );
+  } catch (error) {
+    console.log('Error in /deductbalance:', error.message);
+    await bot.sendMessage(chatId, '❌ Error deducting balance.');
+  }
+});
+
+// Deduct investment amount
+bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const amount = parseFloat(match[2]);
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  if (isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(chatId, '❌ Invalid amount. Use: /deductinv USER_ID AMOUNT');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    // Check if user has enough invested
+    const investments = await loadData(INVESTMENTS_FILE);
+    const userInvestments = investments.filter(inv => inv.memberId === memberId && inv.status === 'active');
+    const totalInvested = userInvestments.reduce((sum, inv) => sum + inv.amount, 0);
+    
+    if (totalInvested < amount) {
+      await bot.sendMessage(chatId,
+        `❌ User doesn't have enough active investments.\n` +
+        `Total Active Investments: ${formatCurrency(totalInvested)}\n` +
+        `Trying to deduct: ${formatCurrency(amount)}`
+      );
+      return;
+    }
+    
+    // Find and reduce investments (start with most recent)
+    let remaining = amount;
+    for (let investment of userInvestments.reverse()) {
+      if (remaining <= 0) break;
+      
+      const investmentIndex = investments.findIndex(inv => inv.id === investment.id);
+      if (investmentIndex !== -1) {
+        const deductAmount = Math.min(investments[investmentIndex].amount, remaining);
+        investments[investmentIndex].amount -= deductAmount;
+        remaining -= deductAmount;
+        
+        // If investment becomes 0 or negative, mark as completed
+        if (investments[investmentIndex].amount <= 0) {
+          investments[investmentIndex].status = 'completed';
+          investments[investmentIndex].completedAt = new Date().toISOString();
+        }
+      }
+    }
+    
+    // Update user's total invested
+    users[userIndex].totalInvested = Math.max(0, (users[userIndex].totalInvested || 0) - amount);
+    await saveData(USERS_FILE, users);
+    await saveData(INVESTMENTS_FILE, investments);
+    
+    await bot.sendMessage(chatId,
+      `✅ **Investment Deducted Successfully**\n\n` +
+      `User: ${users[userIndex].name} (${memberId})\n` +
+      `Amount Deducted: ${formatCurrency(amount)}\n` +
+      `New Total Invested: ${formatCurrency(users[userIndex].totalInvested)}`
+    );
+    
+    // Notify user
+    await sendUserNotification(memberId,
+      `⚠️ **Investment Deducted by Admin**\n\n` +
+      `Amount: ${formatCurrency(amount)}\n` +
+      `New Total Invested: ${formatCurrency(users[userIndex].totalInvested)}\n\n` +
+      `This was deducted by an administrator.`
+    );
+  } catch (error) {
+    console.log('Error in /deductinv:', error.message);
+    await bot.sendMessage(chatId, '❌ Error deducting investment.');
+  }
+});
+
+// List all referrals
+bot.onText(/\/referrals/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const referrals = await loadData(REFERRALS_FILE);
+    
+    if (referrals.length === 0) {
+      await bot.sendMessage(chatId, '📭 No referrals found.');
+      return;
+    }
+    
+    const paidReferrals = referrals.filter(r => r.status === 'paid');
+    const pendingReferrals = referrals.filter(r => r.status === 'pending');
+    
+    let message = `👥 **Referrals Summary**\n\n`;
+    message += `Total Referrals: ${referrals.length}\n`;
+    message += `Paid: ${paidReferrals.length}\n`;
+    message += `Pending: ${pendingReferrals.length}\n`;
+    message += `Total Bonus Paid: ${formatCurrency(paidReferrals.reduce((sum, r) => sum + (r.bonusAmount || 0), 0))}\n\n`;
+    
+    // Show recent referrals
+    const recentReferrals = referrals.slice(-10).reverse();
+    
+    message += `**Recent Referrals:**\n`;
+    recentReferrals.forEach((ref, index) => {
+      const status = ref.status === 'paid' ? '✅' : ref.status === 'pending' ? '⏳' : '❌';
+      message += `${index + 1}. ${status} ${ref.referrerName} → ${ref.referredName}\n`;
+      message += `   Bonus: ${formatCurrency(ref.bonusAmount || 0)} | ${new Date(ref.date).toLocaleDateString()}\n\n`;
+    });
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /referrals:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading referrals.');
+  }
+});
+
+// Find user by referral code
+bot.onText(/\/findref (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const referralCode = match[1].toUpperCase();
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const user = users.find(u => u.referralCode === referralCode);
+    
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ No user found with referral code: ${referralCode}`);
+      return;
+    }
+    
+    const referrals = await loadData(REFERRALS_FILE);
+    const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
+    const successfulReferrals = userReferrals.filter(r => r.status === 'paid');
+    
+    const message = `🔍 **User Found by Referral Code**\n\n` +
+                   `Referral Code: ${referralCode}\n` +
+                   `User: ${user.name} (${user.memberId})\n` +
+                   `Email: ${user.email || 'N/A'}\n` +
+                   `Balance: ${formatCurrency(user.balance || 0)}\n` +
+                   `Total Referrals: ${user.referrals || 0}\n` +
+                   `Successful Referrals: ${successfulReferrals.length}\n` +
+                   `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
+                   `**View User:** /view ${user.memberId}\n` +
+                   `**Message User:** /message ${user.memberId}`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /findref:', error.message);
+    await bot.sendMessage(chatId, '❌ Error finding user.');
+  }
+});
+
+// Add referral bonus
+bot.onText(/\/addrefbonus (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const amount = parseFloat(match[2]);
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  if (isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(chatId, '❌ Invalid amount. Use: /addrefbonus USER_ID AMOUNT');
+    return;
+  }
+  
+  try {
+    const users = await loadData(USERS_FILE);
+    const userIndex = users.findIndex(u => u.memberId === memberId);
+    
+    if (userIndex === -1) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+    
+    // Add to balance and referral earnings
+    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + amount;
+    users[userIndex].referralEarnings = (parseFloat(users[userIndex].referralEarnings) || 0) + amount;
+    
+    await saveData(USERS_FILE, users);
+    
+    // Record transaction
+    const transactions = await loadData(TRANSACTIONS_FILE);
+    transactions.push({
+      id: `REF-BONUS-${Date.now()}`,
+      memberId: memberId,
+      type: 'referral_bonus',
+      amount: amount,
+      description: `Admin added referral bonus`,
+      date: new Date().toISOString(),
+      adminId: chatId.toString()
+    });
+    await saveData(TRANSACTIONS_FILE, transactions);
+    
+    await bot.sendMessage(chatId,
+      `✅ **Referral Bonus Added**\n\n` +
+      `User: ${users[userIndex].name} (${memberId})\n` +
+      `Bonus Amount: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency(users[userIndex].balance)}\n` +
+      `Total Referral Earnings: ${formatCurrency(users[userIndex].referralEarnings)}`
+    );
+    
+    // Notify user
+    await sendUserNotification(memberId,
+      `🎉 **Referral Bonus Added!**\n\n` +
+      `Amount: ${formatCurrency(amount)}\n` +
+      `New Balance: ${formatCurrency(users[userIndex].balance)}\n` +
+      `Total Referral Earnings: ${formatCurrency(users[userIndex].referralEarnings)}\n\n` +
+      `This bonus was added by an administrator.`
+    );
+  } catch (error) {
+    console.log('Error in /addrefbonus:', error.message);
+    await bot.sendMessage(chatId, '❌ Error adding referral bonus.');
   }
 });
 
