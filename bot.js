@@ -212,6 +212,12 @@ async function getUserByMemberId(memberId) {
   return users.find(u => u.memberId === memberId);
 }
 
+// Get user by email
+async function getUserByEmail(email) {
+  const users = await loadData(USERS_FILE);
+  return users.find(u => u.email && u.email.toLowerCase() === email.toLowerCase());
+}
+
 // Get active support chat for user
 async function getActiveSupportChat(userId) {
   const supportChats = await loadData(SUPPORT_CHATS_FILE);
@@ -853,6 +859,7 @@ bot.onText(/\/start/, async (msg) => {
                             `/withdraw - Withdraw funds\n` +
                             `/referral - Share & earn 10%\n` +
                             `/profile - Account details\n` +
+                            `/transactions - View transaction history\n` +
                             `/support - Contact support\n` +
                             `/logout - Logout\n\n` +
                             `💳 **Payment:**\n` +
@@ -887,6 +894,242 @@ bot.onText(/\/start/, async (msg) => {
   fakeMessage += 'Name: Starlife Advert US Agency';
   
   await bot.sendMessage(chatId, fakeMessage);
+});
+
+// Forgot Password command - NEW
+bot.onText(/\/forgotpassword/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is already logged in
+  const isLoggedIn = await isUserLoggedIn(chatId);
+  if (isLoggedIn) {
+    await bot.sendMessage(chatId, '✅ You are already logged in. Use /profile to see your account details.');
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'forgot_password_method',
+    data: {}
+  };
+  
+  await bot.sendMessage(chatId,
+    `🔐 **Password Recovery**\n\n` +
+    `Select how you want to recover your password:\n\n` +
+    `1️⃣ **By Member ID**\n` +
+    `   - Enter your Member ID\n` +
+    `   - We'll send new password to your registered chat\n\n` +
+    `2️⃣ **By Email**\n` +
+    `   - Enter your registered email\n` +
+    `   - We'll send new password to your registered chat\n\n` +
+    `3️⃣ **Contact Support**\n` +
+    `   - If you don't remember either\n\n` +
+    `Reply with number (1-3):`
+  );
+});
+
+// Help command - NEW
+bot.onText(/\/help/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const isLoggedIn = await isUserLoggedIn(chatId);
+  const user = isLoggedIn ? await getLoggedInUser(chatId) : null;
+  
+  let helpMessage = `🆘 **Starlife Advert Help Center**\n\n`;
+  
+  if (isLoggedIn && user) {
+    helpMessage += `👋 Welcome ${user.name}!\n\n`;
+    helpMessage += `**📊 Account Commands:**\n`;
+    helpMessage += `/profile - View your account details\n`;
+    helpMessage += `/earnings - View your earnings\n`;
+    helpMessage += `/transactions - View transaction history\n`;
+    helpMessage += `/referral - View referral program\n`;
+    helpMessage += `/logout - Logout from account\n\n`;
+    
+    helpMessage += `**💰 Financial Commands:**\n`;
+    helpMessage += `/invest - Make new investment\n`;
+    helpMessage += `/withdraw - Withdraw funds\n`;
+    helpMessage += `/viewearnings USER-ID - View others earnings ($1 fee)\n\n`;
+    
+    helpMessage += `**🆘 Support Commands:**\n`;
+    helpMessage += `/support - Contact support team\n`;
+    helpMessage += `/appeal - Submit appeal (if suspended)\n`;
+    helpMessage += `/inbox - View offline messages\n\n`;
+    
+    helpMessage += `**🔐 Account Security:**\n`;
+    helpMessage += `/forgotpassword - Reset your password\n\n`;
+    
+    helpMessage += `**💡 Quick Start:**\n`;
+    helpMessage += `/investnow - Quick investment guide\n`;
+  } else {
+    helpMessage += `**Welcome! Here are available commands:**\n\n`;
+    helpMessage += `**👤 Account Commands:**\n`;
+    helpMessage += `/register - Create new account\n`;
+    helpMessage += `/login - Login to existing account\n`;
+    helpMessage += `/forgotpassword - Reset your password\n\n`;
+    
+    helpMessage += `**💡 Information Commands:**\n`;
+    helpMessage += `/investnow - Quick start guide\n`;
+    helpMessage += `/support - Contact support\n\n`;
+    
+    helpMessage += `**📊 After Registration:**\n`;
+    helpMessage += `• Use /invest to start earning\n`;
+    helpMessage += `• Earn 2% daily profit\n`;
+    helpMessage += `• Get 10% from referrals\n`;
+    helpMessage += `• Fast withdrawals (10-15 min)\n\n`;
+  }
+  
+  helpMessage += `**💳 Payment Details:**\n`;
+  helpMessage += `M-Pesa Till: 6034186\n`;
+  helpMessage += `Name: Starlife Advert US Agency\n\n`;
+  helpMessage += `**❓ Need Help?**\n`;
+  helpMessage += `Use /support for immediate assistance`;
+  
+  await bot.sendMessage(chatId, helpMessage);
+});
+
+// Transactions command - NEW
+bot.onText(/\/transactions/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  try {
+    const transactions = await loadData(TRANSACTIONS_FILE);
+    const userTransactions = transactions.filter(t => t.memberId === user.memberId);
+    
+    if (userTransactions.length === 0) {
+      await bot.sendMessage(chatId, '📭 No transactions found.');
+      return;
+    }
+    
+    // Sort by date (newest first)
+    userTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    let message = `📊 **Transaction History**\n\n`;
+    message += `Total Transactions: ${userTransactions.length}\n\n`;
+    
+    // Show last 10 transactions
+    const recentTransactions = userTransactions.slice(0, 10);
+    
+    recentTransactions.forEach((tx, index) => {
+      const date = new Date(tx.date).toLocaleDateString();
+      const time = new Date(tx.date).toLocaleTimeString();
+      const amount = parseFloat(tx.amount);
+      const sign = amount >= 0 ? '+' : '';
+      const type = tx.type === 'daily_profit' ? '💰 Daily Profit' :
+                   tx.type === 'withdrawal' ? '💳 Withdrawal' :
+                   tx.type === 'referral_bonus' ? '👥 Referral Bonus' :
+                   tx.type === 'view_earnings_fee' ? '👀 Earnings View' :
+                   tx.type === 'registration' ? '📝 Registration' :
+                   tx.type === 'admin_add_balance' ? '👑 Admin Add' :
+                   tx.type === 'admin_deduct_balance' ? '👑 Admin Deduct' :
+                   tx.type === 'manual_investment' ? '📈 Manual Investment' :
+                   tx.type;
+      
+      message += `${index + 1}. **${type}**\n`;
+      message += `   Amount: ${sign}${formatCurrency(amount)}\n`;
+      message += `   Date: ${date} ${time}\n`;
+      if (tx.description) {
+        message += `   Note: ${tx.description}\n`;
+      }
+      message += `\n`;
+    });
+    
+    if (userTransactions.length > 10) {
+      message += `... and ${userTransactions.length - 10} more transactions\n`;
+      message += `Use /support to request full transaction history\n`;
+    }
+    
+    // Calculate totals
+    const totalDeposits = userTransactions
+      .filter(t => t.amount > 0 && t.type !== 'daily_profit')
+      .reduce((sum, t) => sum + t.amount, 0);
+    
+    const totalWithdrawals = userTransactions
+      .filter(t => t.amount < 0)
+      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    
+    const totalProfits = userTransactions
+      .filter(t => t.type === 'daily_profit')
+      .reduce((sum, t) => sum + t.amount, 0);
+    
+    message += `\n**📈 Summary:**\n`;
+    message += `Total Deposits: ${formatCurrency(totalDeposits)}\n`;
+    message += `Total Withdrawals: ${formatCurrency(totalWithdrawals)}\n`;
+    message += `Total Profits: ${formatCurrency(totalProfits)}\n`;
+    
+    await bot.sendMessage(chatId, message);
+  } catch (error) {
+    console.log('Error in /transactions:', error.message);
+    await bot.sendMessage(chatId, '❌ Error loading transactions.');
+  }
+});
+
+// Investnow command - NEW
+bot.onText(/\/investnow/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  const guideMessage = `🚀 **Quick Start Investment Guide**\n\n` +
+                      `**Step 1: Create Account**\n` +
+                      `Use /register to create your account\n` +
+                      `Save your Member ID and Password!\n\n` +
+                      `**Step 2: Make Payment**\n` +
+                      `Send payment to:\n` +
+                      `💳 M-Pesa Till: 6034186\n` +
+                      `🏢 Name: Starlife Advert US Agency\n\n` +
+                      `**Step 3: Invest**\n` +
+                      `Use /invest to start investment\n` +
+                      `Minimum: $10 | Maximum: $10,000\n` +
+                      `Send payment proof screenshot\n\n` +
+                      `**Step 4: Earn Daily**\n` +
+                      `✅ 2% daily profit\n` +
+                      `✅ 30-day investment period\n` +
+                      `✅ Automatic daily earnings\n\n` +
+                      `**Step 5: Refer & Earn**\n` +
+                      `Share your referral code\n` +
+                      `Earn 10% of referrals' investments\n\n` +
+                      `**Step 6: Withdraw**\n` +
+                      `Minimum withdrawal: $10\n` +
+                      `Processing time: 10-15 minutes\n` +
+                      `Fee: 5% (industry standard)\n\n` +
+                      `**Ready to Start?**\n` +
+                      `▶️ /register - Create account\n` +
+                      `▶️ /login - If you have account\n` +
+                      `▶️ /invest - Start investing\n\n` +
+                      `**Need Help?**\n` +
+                      `/support - 24/7 support available`;
+  
+  await bot.sendMessage(chatId, guideMessage);
+});
+
+// Change Password command - NEW
+bot.onText(/\/changepassword/, async (msg) => {
+  const chatId = msg.chat.id;
+  
+  // Check if user is logged in
+  const user = await getLoggedInUser(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, '❌ Please login first with /login');
+    return;
+  }
+  
+  userSessions[chatId] = {
+    step: 'change_password_current',
+    data: {
+      memberId: user.memberId
+    }
+  };
+  
+  await bot.sendMessage(chatId,
+    `🔐 **Change Password**\n\n` +
+    `For security, please enter your current password:`
+  );
 });
 
 // Invest command - NEW FIXED FLOW
@@ -1084,6 +1327,9 @@ bot.onText(/\/profile/, async (msg) => {
   message += `Total Referrals: ${user.referrals || 0}\n`;
   message += `Successful Referrals: ${successfulReferrals.length}\n`;
   message += `Your Code: ${user.referralCode}\n\n`;
+  message += `**Account Security**\n`;
+  message += `/changepassword - Change password\n`;
+  message += `/forgotpassword - Reset password\n\n`;
   message += `**Share your code:** ${user.referralCode}\n`;
   message += `Tell friends to use: /register ${user.referralCode}`;
   
@@ -1188,6 +1434,7 @@ bot.onText(/\/logout/, async (msg) => {
     `You have been logged out from ${user.name} (${user.memberId}).\n\n` +
     `To login again, use:\n` +
     `/login - If you remember your credentials\n` +
+    `/forgotpassword - If you forgot password\n` +
     `/support - If you need help logging in\n\n` +
     `Note: You can still use /support while logged out.`
   );
@@ -1583,8 +1830,224 @@ bot.on('message', async (msg) => {
   if (!session) return;
   
   try {
+    // Handle forgot password method selection
+    if (session.step === 'forgot_password_method') {
+      const choice = parseInt(text);
+      
+      if (isNaN(choice) || choice < 1 || choice > 3) {
+        await bot.sendMessage(chatId, '❌ Please enter a number between 1-3:');
+        return;
+      }
+      
+      if (choice === 3) {
+        // Contact support
+        delete userSessions[chatId];
+        await bot.sendMessage(chatId,
+          `🆘 **Contact Support for Password Recovery**\n\n` +
+          `Please use /support to contact our support team.\n` +
+          `They will help you recover your account.\n\n` +
+          `Make sure to provide:\n` +
+          `• Your name\n` +
+          `• Email address (if registered)\n` +
+          `• Any other account details you remember`
+        );
+        return;
+      }
+      
+      session.data.method = choice === 1 ? 'memberId' : 'email';
+      session.step = choice === 1 ? 'forgot_password_memberid' : 'forgot_password_email';
+      
+      if (choice === 1) {
+        await bot.sendMessage(chatId,
+          `🔐 **Password Recovery by Member ID**\n\n` +
+          `Enter your Member ID:\n` +
+          `(Format: USER-123456)\n\n` +
+          `A new password will be sent to your registered chat.`
+        );
+      } else {
+        await bot.sendMessage(chatId,
+          `📧 **Password Recovery by Email**\n\n` +
+          `Enter your registered email address:\n\n` +
+          `A new password will be sent to your registered chat.`
+        );
+      }
+    }
+    else if (session.step === 'forgot_password_memberid') {
+      const memberId = text.trim().toUpperCase();
+      const users = await loadData(USERS_FILE);
+      const user = users.find(u => u.memberId === memberId);
+      
+      if (!user) {
+        await bot.sendMessage(chatId, '❌ Member ID not found. Please check and try again:');
+        return;
+      }
+      
+      if (user.banned) {
+        await bot.sendMessage(chatId, '🚫 This account has been suspended. Contact support.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      // Generate new password
+      const newPassword = generateRandomPassword(8);
+      const userIndex = users.findIndex(u => u.memberId === memberId);
+      users[userIndex].passwordHash = hashPassword(newPassword);
+      
+      await saveData(USERS_FILE, users);
+      
+      delete userSessions[chatId];
+      
+      // Send password to user's registered chat
+      await sendUserNotification(memberId,
+        `🔐 **Password Reset Successfully**\n\n` +
+        `Your password has been reset via password recovery.\n\n` +
+        `New Password: **${newPassword}**\n\n` +
+        `**Login Details:**\n` +
+        `Member ID: ${memberId}\n` +
+        `Password: ${newPassword}\n\n` +
+        `For security, change your password after logging in.\n` +
+        `Use /changepassword to set a new password.`
+      );
+      
+      await bot.sendMessage(chatId,
+        `✅ **Password Reset Initiated**\n\n` +
+        `A new password has been sent to the registered chat for ${memberId}.\n\n` +
+        `If you don't receive it within 2 minutes:\n` +
+        `1. Make sure you're using the correct Telegram account\n` +
+        `2. Contact support with /support\n\n` +
+        `**Security Note:**\n` +
+        `Always use /changepassword after logging in to set your own password.`
+      );
+    }
+    else if (session.step === 'forgot_password_email') {
+      const email = text.trim().toLowerCase();
+      const users = await loadData(USERS_FILE);
+      const user = users.find(u => u.email && u.email.toLowerCase() === email);
+      
+      if (!user) {
+        await bot.sendMessage(chatId, '❌ Email not found. Please check and try again:');
+        return;
+      }
+      
+      if (user.banned) {
+        await bot.sendMessage(chatId, '🚫 This account has been suspended. Contact support.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      // Generate new password
+      const newPassword = generateRandomPassword(8);
+      const userIndex = users.findIndex(u => u.email && u.email.toLowerCase() === email);
+      users[userIndex].passwordHash = hashPassword(newPassword);
+      
+      await saveData(USERS_FILE, users);
+      
+      delete userSessions[chatId];
+      
+      // Send password to user's registered chat
+      await sendUserNotification(user.memberId,
+        `🔐 **Password Reset Successfully**\n\n` +
+        `Your password has been reset via password recovery.\n\n` +
+        `New Password: **${newPassword}**\n\n` +
+        `**Login Details:**\n` +
+        `Member ID: ${user.memberId}\n` +
+        `Password: ${newPassword}\n\n` +
+        `For security, change your password after logging in.\n` +
+        `Use /changepassword to set a new password.`
+      );
+      
+      await bot.sendMessage(chatId,
+        `✅ **Password Reset Initiated**\n\n` +
+        `A new password has been sent to the registered chat for ${user.memberId}.\n\n` +
+        `If you don't receive it within 2 minutes:\n` +
+        `1. Make sure you're using the correct Telegram account\n` +
+        `2. Contact support with /support\n\n` +
+        `**Security Note:**\n` +
+        `Always use /changepassword after logging in to set your own password.`
+      );
+    }
+    
+    // Handle change password steps
+    else if (session.step === 'change_password_current') {
+      const currentPassword = text.trim();
+      const users = await loadData(USERS_FILE);
+      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      
+      if (userIndex === -1 || users[userIndex].passwordHash !== hashPassword(currentPassword)) {
+        await bot.sendMessage(chatId, '❌ Current password is incorrect. Please try again:');
+        return;
+      }
+      
+      session.step = 'change_password_new';
+      
+      await bot.sendMessage(chatId,
+        `✅ Current password verified.\n\n` +
+        `Enter your new password:\n` +
+        `• At least 6 characters\n` +
+        `• Must include letters and numbers\n\n` +
+        `Enter new password:`
+      );
+    }
+    else if (session.step === 'change_password_new') {
+      const newPassword = text.trim();
+      
+      if (newPassword.length < 6) {
+        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter new password:');
+        return;
+      }
+      
+      if (!/[a-zA-Z]/.test(newPassword) || !/\d/.test(newPassword)) {
+        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter new password:');
+        return;
+      }
+      
+      session.data.newPassword = newPassword;
+      session.step = 'change_password_confirm';
+      
+      await bot.sendMessage(chatId,
+        `Confirm your new password:\n\n` +
+        `Re-enter your new password:`
+      );
+    }
+    else if (session.step === 'change_password_confirm') {
+      const confirmPassword = text.trim();
+      
+      if (confirmPassword !== session.data.newPassword) {
+        await bot.sendMessage(chatId, '❌ Passwords do not match. Please start again with /changepassword');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      // Update password in database
+      const users = await loadData(USERS_FILE);
+      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      
+      if (userIndex === -1) {
+        await bot.sendMessage(chatId, '❌ User not found.');
+        delete userSessions[chatId];
+        return;
+      }
+      
+      users[userIndex].passwordHash = hashPassword(session.data.newPassword);
+      users[userIndex].lastPasswordChange = new Date().toISOString();
+      
+      await saveData(USERS_FILE, users);
+      
+      delete userSessions[chatId];
+      
+      await bot.sendMessage(chatId,
+        `✅ **Password Changed Successfully!**\n\n` +
+        `Your password has been updated.\n\n` +
+        `**Security Tips:**\n` +
+        `• Never share your password\n` +
+        `• Use a strong, unique password\n` +
+        `• Change password regularly\n\n` +
+        `If you suspect any unauthorized access, contact support immediately.`
+      );
+    }
+    
     // Handle registration steps
-    if (session.step === 'awaiting_name') {
+    else if (session.step === 'awaiting_name') {
       const name = text.trim();
       if (name.length < 2) {
         await bot.sendMessage(chatId, '❌ Name must be at least 2 characters. Please enter your name:');
@@ -1755,6 +2218,9 @@ bot.on('message', async (msg) => {
                        `2. Minimum investment: $10\n` +
                        `3. Earn 2% daily profit\n` +
                        `4. Share your referral code to earn 10%!\n\n` +
+                       `**Account Security:**\n` +
+                       `/changepassword - Change password anytime\n` +
+                       `/forgotpassword - Reset if forgotten\n\n` +
                        `**Payment Details:**\n` +
                        `💳 M-Pesa Till: 6034186\n` +
                        `🏢 Name: Starlife Advert US Agency\n\n` +
@@ -1762,6 +2228,7 @@ bot.on('message', async (msg) => {
                        `/invest - Make investment\n` +
                        `/earnings - View YOUR earnings\n` +
                        `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
+                       `/transactions - View transaction history\n` +
                        `/referral - Share & earn 10%\n` +
                        `/profile - Account details\n` +
                        `/support - Contact support\n\n` +
@@ -1849,8 +2316,10 @@ bot.on('message', async (msg) => {
                         `/earnings - View YOUR earnings\n` +
                         `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                         `/withdraw - Withdraw funds\n` +
+                        `/transactions - View transaction history\n` +
                         `/referral - Share & earn 10%\n` +
                         `/profile - Account details\n` +
+                        `/changepassword - Change password\n` +
                         `/support - Contact support\n` +
                         `/logout - Logout`;
       
@@ -2767,6 +3236,7 @@ bot.onText(/\/stats/, async (msg) => {
     const referrals = await loadData(REFERRALS_FILE);
     const mediaFiles = await loadData(MEDIA_FILES_FILE);
     const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
+    const transactions = await loadData(TRANSACTIONS_FILE);
     
     const totalBalance = users.reduce((sum, user) => sum + parseFloat(user.balance || 0), 0);
     const totalInvested = users.reduce((sum, user) => sum + parseFloat(user.totalInvested || 0), 0);
@@ -2816,6 +3286,8 @@ bot.onText(/\/stats/, async (msg) => {
                         `**Earnings Views:**\n` +
                         `• Total Views: ${earningsViews.length}\n` +
                         `• Total Fees: ${formatCurrency(totalEarningsViewFees)}\n\n` +
+                        `**Transactions:**\n` +
+                        `• Total Transactions: ${transactions.length}\n\n` +
                         `**Support:**\n` +
                         `• Active Chats: ${activeSupportChats}\n` +
                         `• Total Chats: ${supportChats.length}\n` +
@@ -2895,12 +3367,14 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
     const withdrawals = await loadData(WITHDRAWALS_FILE);
     const referrals = await loadData(REFERRALS_FILE);
     const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
+    const transactions = await loadData(TRANSACTIONS_FILE);
     
     const userInvestments = investments.filter(i => i.memberId === memberId);
     const userWithdrawals = withdrawals.filter(w => w.memberId === memberId);
     const userReferrals = referrals.filter(r => r.referrerId === memberId);
     const userEarningsViews = earningsViews.filter(v => v.viewerId === memberId);
     const viewedUserEarnings = earningsViews.filter(v => v.viewedId === memberId);
+    const userTransactions = transactions.filter(t => t.memberId === memberId);
     const referredBy = user.referredBy ? `Referred by: ${user.referredBy}\n` : '';
     
     const message = `👤 **User Details**\n\n` +
@@ -2911,7 +3385,8 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `Status: ${user.banned ? '🚫 Banned' : user.botBlocked ? '❌ Blocked Bot' : '✅ Active'}\n` +
                    `${referredBy}` +
                    `Joined: ${new Date(user.joinedDate).toLocaleString()}\n` +
-                   `Last Login: ${user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never'}\n\n` +
+                   `Last Login: ${user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never'}\n` +
+                   `Last Password Change: ${user.lastPasswordChange ? new Date(user.lastPasswordChange).toLocaleString() : 'Never'}\n\n` +
                    `💰 **Financials**\n` +
                    `Balance: ${formatCurrency(user.balance || 0)}\n` +
                    `Total Invested: ${formatCurrency(user.totalInvested || 0)}\n` +
@@ -2924,7 +3399,8 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `Withdrawals: ${userWithdrawals.length}\n` +
                    `Referral Network: ${userReferrals.length}\n` +
                    `Earnings Views Made: ${userEarningsViews.length}\n` +
-                   `Earnings Views Received: ${viewedUserEarnings.length}\n\n` +
+                   `Earnings Views Received: ${viewedUserEarnings.length}\n` +
+                   `Transactions: ${userTransactions.length}\n\n` +
                    `**Actions:**\n` +
                    `💰 Add Balance: /addbalance ${memberId} AMOUNT\n` +
                    `🔐 Reset Pass: /resetpass ${memberId}\n` +
@@ -3020,6 +3496,7 @@ bot.onText(/\/resetpass (.+)/, async (msg, match) => {
     
     const newPassword = generateRandomPassword(8);
     users[userIndex].passwordHash = hashPassword(newPassword);
+    users[userIndex].lastPasswordChange = new Date().toISOString();
     
     await saveData(USERS_FILE, users);
     
@@ -4334,4 +4811,4 @@ process.on('SIGINT', () => {
   });
 });
 
-console.log('✅ Starlife Advert Bot is running! All issues fixed!');
+console.log('✅ Starlife Advert Bot is running! All features added successfully!');
