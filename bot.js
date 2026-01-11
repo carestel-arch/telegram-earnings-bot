@@ -138,7 +138,7 @@ function calculateDailyProfit(investmentAmount) {
   return investmentAmount * 0.02;
 }
 
-// Calculate referral bonus (10% of referred user's investment)
+// Calculate referral bonus (10% of referred user's FIRST investment)
 function calculateReferralBonus(investmentAmount) {
   return investmentAmount * 0.10;
 }
@@ -842,7 +842,7 @@ bot.onText(/\/start/, async (msg) => {
                             `/earnings - View YOUR earnings\n` +
                             `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                             `/withdraw - Withdraw funds\n` +
-                            `/referral - Share & earn 10%\n` +
+                            `/referral - Share & earn 10% (FIRST investment only)\n` +
                             `/profile - Account details\n` +
                             `/transactions - View transaction history\n` +
                             `/support - Contact support\n` +
@@ -870,7 +870,7 @@ bot.onText(/\/start/, async (msg) => {
   
   fakeMessage += '\n🚀 **Ready to Start Earning?**\n\n';
   fakeMessage += '💵 **Earn 2% Daily Profit**\n';
-  fakeMessage += '👥 **Earn 10% from referrals**\n';
+  fakeMessage += '👥 **Earn 10% from referrals (FIRST investment only)**\n';
   fakeMessage += '⚡ **Fast Withdrawals (10-15 min)**\n\n';
   fakeMessage += 'Choose an option:\n';
   fakeMessage += '/register - Create account\n';
@@ -934,7 +934,7 @@ bot.onText(/\/help/, async (msg) => {
     helpMessage += `/profile - View your account details\n`;
     helpMessage += `/earnings - View your earnings\n`;
     helpMessage += `/transactions - View transaction history\n`;
-    helpMessage += `/referral - View referral program\n`;
+    helpMessage += `/referral - View referral program (FIRST investment only)\n`;
     helpMessage += `/logout - Logout from account\n\n`;
     
     helpMessage += `**💰 Financial Commands:**\n`;
@@ -966,7 +966,7 @@ bot.onText(/\/help/, async (msg) => {
     helpMessage += `**📊 After Registration:**\n`;
     helpMessage += `• Use /invest to start earning\n`;
     helpMessage += `• Earn 2% daily profit (LIFETIME)\n`;
-    helpMessage += `• Get 10% from referrals\n`;
+    helpMessage += `• Get 10% from referrals (FIRST investment only)\n`;
     helpMessage += `• Fast withdrawals (10-15 min)\n\n`;
   }
   
@@ -1096,7 +1096,7 @@ bot.onText(/\/investnow/, async (msg) => {
                       `✅ Automatic daily earnings\n\n` +
                       `**Step 5: Refer & Earn**\n` +
                       `Share your referral code\n` +
-                      `Earn 10% of referrals' investments\n\n` +
+                      `Earn 10% of referrals' FIRST investment only\n\n` +
                       `**Step 6: Withdraw**\n` +
                       `Minimum withdrawal: $2\n` +
                       `Processing time: 10-15 minutes\n` +
@@ -1365,10 +1365,15 @@ bot.onText(/\/referral/, async (msg) => {
   const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
   
   let message = `👥 **Referral Program**\n\n`;
-  message += `**Earn 10% commission** on every investment your referrals make!\n\n`;
+  message += `**Earn 10% commission on your referrals' FIRST investment only!**\n\n`;
   message += `Your Referral Code: **${user.referralCode}**\n`;
   message += `Total Referrals: ${user.referrals || 0}\n`;
   message += `Total Earned from Referrals: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
+  message += `**How it works:**\n`;
+  message += `1. Share your referral code with friends\n`;
+  message += `2. When they register using your code, they become your referral\n`;
+  message += `3. When they make their FIRST investment, you get 10%\n`;
+  message += `4. Their subsequent investments don't earn you bonuses\n\n`;
   message += `**How to share:**\n`;
   message += `Tell your friends to use the command:\n`;
   message += `/register ${user.referralCode}\n\n`;
@@ -1376,8 +1381,10 @@ bot.onText(/\/referral/, async (msg) => {
   
   if (userReferrals.length > 0) {
     userReferrals.forEach((ref, index) => {
-      const status = ref.status === 'paid' ? '✅ Paid' : '⏳ Pending';
-      message += `${index + 1}. ${ref.referredName} - ${status}\n`;
+      const status = ref.status === 'paid' ? '✅ Bonus Paid' : 
+                    ref.status === 'pending' ? '⏳ Pending First Investment' : '❌ Failed';
+      const bonus = ref.bonusAmount ? `- Bonus: ${formatCurrency(ref.bonusAmount)}` : '';
+      message += `${index + 1}. ${ref.referredName} - ${status} ${bonus}\n`;
     });
   } else {
     message += `No referrals yet. Start sharing your code!`;
@@ -1784,7 +1791,7 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
     if (referrer) {
       registrationMessage += `✅ **Referral Code Applied!**\n`;
       registrationMessage += `Referred by: ${referrer.name}\n`;
-      registrationMessage += `You'll earn 10% bonus when you invest!\n\n`;
+      registrationMessage += `Referrer earns 10% bonus on your FIRST investment only!\n\n`;
     } else {
       registrationMessage += `⚠️ **Invalid Referral Code:** ${referralCode}\n`;
       registrationMessage += `Starting registration without referral...\n\n`;
@@ -2231,7 +2238,7 @@ bot.on('message', async (msg) => {
                        `1. Use /invest to make your first investment\n` +
                        `2. Minimum investment: $10\n` +
                        `3. Earn 2% daily profit (LIFETIME)\n` +
-                       `4. Share your referral code to earn 10%!\n\n` +
+                       `4. Share your referral code to earn 10% on FIRST investments!\n\n` +
                        `**Account Security:**\n` +
                        `/changepassword - Change password anytime\n` +
                        `/forgotpassword - Reset if forgotten\n\n` +
@@ -2246,7 +2253,7 @@ bot.on('message', async (msg) => {
                        `/earnings - View YOUR earnings\n` +
                        `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                        `/transactions - View transaction history\n` +
-                       `/referral - Share & earn 10%\n` +
+                       `/referral - Share & earn 10% (FIRST investment only)\n` +
                        `/profile - Account details\n` +
                        `/support - Contact support\n\n` +
                        `✅ You are now logged in!`;
@@ -2334,7 +2341,7 @@ bot.on('message', async (msg) => {
                         `/viewearnings USER-ID - View others earnings ($1 fee)\n` +
                         `/withdraw - Withdraw funds\n` +
                         `/transactions - View transaction history\n` +
-                        `/referral - Share & earn 10%\n` +
+                        `/referral - Share & earn 10% (FIRST investment only)\n` +
                         `/profile - Account details\n` +
                         `/changepassword - Change password\n` +
                         `/support - Contact support\n` +
@@ -4102,7 +4109,7 @@ bot.onText(/\/investments/, async (msg) => {
   }
 });
 
-// Approve investment
+// Approve investment - MODIFIED FOR REFERRAL BONUS ON FIRST INVESTMENT ONLY
 bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const investmentId = match[1];
@@ -4141,56 +4148,90 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + investment.amount;
       users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
       
-      // Handle referral bonus if this is the user's first investment and they were referred
+      // Handle referral bonus if this is the user's FIRST investment and they were referred
       if (users[userIndex].referredBy) {
         const referrer = users.find(u => u.referralCode === users[userIndex].referredBy);
         if (referrer) {
-          const referralBonus = calculateReferralBonus(investment.amount);
-          
-          // Update referrer's balance and referral earnings
-          const referrerIndex = users.findIndex(u => u.memberId === referrer.memberId);
-          users[referrerIndex].balance = (parseFloat(users[referrerIndex].balance) || 0) + referralBonus;
-          users[referrerIndex].referralEarnings = (parseFloat(users[referrerIndex].referralEarnings) || 0) + referralBonus;
-          
-          // Update referral record
-          const referrals = await loadData(REFERRALS_FILE);
-          const referralIndex = referrals.findIndex(r => 
-            r.referrerId === referrer.memberId && 
-            r.referredId === investment.memberId
+          // Check if this is the user's FIRST investment
+          const userInvestments = investments.filter(inv => 
+            inv.memberId === investment.memberId && 
+            inv.status === 'active'
           );
           
-          if (referralIndex !== -1) {
-            referrals[referralIndex].status = 'paid';
-            referrals[referralIndex].bonusAmount = referralBonus;
-            referrals[referralIndex].bonusPaid = true;
-            referrals[referralIndex].investmentAmount = investment.amount;
-            referrals[referralIndex].paidAt = new Date().toISOString();
+          // Only pay bonus if this is the FIRST active investment (excluding this one we're about to add)
+          if (userInvestments.length === 0) {
+            const referralBonus = calculateReferralBonus(investment.amount);
             
-            await saveData(REFERRALS_FILE, referrals);
+            // Update referrer's balance and referral earnings
+            const referrerIndex = users.findIndex(u => u.memberId === referrer.memberId);
+            users[referrerIndex].balance = (parseFloat(users[referrerIndex].balance) || 0) + referralBonus;
+            users[referrerIndex].referralEarnings = (parseFloat(users[referrerIndex].referralEarnings) || 0) + referralBonus;
+            
+            // Update referral record
+            const referrals = await loadData(REFERRALS_FILE);
+            const referralIndex = referrals.findIndex(r => 
+              r.referrerId === referrer.memberId && 
+              r.referredId === investment.memberId
+            );
+            
+            if (referralIndex !== -1) {
+              referrals[referralIndex].status = 'paid';
+              referrals[referralIndex].bonusAmount = referralBonus;
+              referrals[referralIndex].bonusPaid = true;
+              referrals[referralIndex].investmentAmount = investment.amount;
+              referrals[referralIndex].paidAt = new Date().toISOString();
+              referrals[referralIndex].isFirstInvestment = false; // Mark as not first anymore
+              
+              await saveData(REFERRALS_FILE, referrals);
+            }
+            
+            // Notify referrer
+            await sendUserNotification(referrer.memberId,
+              `🎉 **Referral Bonus Earned!**\n\n` +
+              `Your referral made their FIRST investment!\n\n` +
+              `Referral: ${users[userIndex].name}\n` +
+              `Investment Amount: ${formatCurrency(investment.amount)}\n` +
+              `Your Bonus (10%): ${formatCurrency(referralBonus)}\n\n` +
+              `Bonus has been added to your balance!\n` +
+              `New Balance: ${formatCurrency(users[referrerIndex].balance)}\n\n` +
+              `Note: You only earn 10% on their FIRST investment.`
+            );
+            
+            // Record transaction for referrer
+            const transactions = await loadData(TRANSACTIONS_FILE);
+            transactions.push({
+              id: `REF-BONUS-${Date.now()}`,
+              memberId: referrer.memberId,
+              type: 'referral_bonus',
+              amount: referralBonus,
+              description: `Bonus from ${users[userIndex].name}'s FIRST investment`,
+              date: new Date().toISOString()
+            });
+            await saveData(TRANSACTIONS_FILE, transactions);
+          } else {
+            // Notify referrer that no bonus for subsequent investment
+            const referrals = await loadData(REFERRALS_FILE);
+            const referralIndex = referrals.findIndex(r => 
+              r.referrerId === referrer.memberId && 
+              r.referredId === investment.memberId
+            );
+            
+            if (referralIndex !== -1 && referrals[referralIndex].isFirstInvestment) {
+              // Mark as not first investment anymore
+              referrals[referralIndex].isFirstInvestment = false;
+              referrals[referralIndex].status = 'completed';
+              referrals[referralIndex].note = 'No bonus - subsequent investment';
+              await saveData(REFERRALS_FILE, referrals);
+              
+              await sendUserNotification(referrer.memberId,
+                `ℹ️ **Referral Update**\n\n` +
+                `${users[userIndex].name} made another investment.\n\n` +
+                `Investment Amount: ${formatCurrency(investment.amount)}\n` +
+                `No bonus earned - you only get 10% on FIRST investment.\n\n` +
+                `Thanks for referring them!`
+              );
+            }
           }
-          
-          // Notify referrer
-          await sendUserNotification(referrer.memberId,
-            `🎉 **Referral Bonus Earned!**\n\n` +
-            `Your referral made their first investment!\n\n` +
-            `Referral: ${users[userIndex].name}\n` +
-            `Investment Amount: ${formatCurrency(investment.amount)}\n` +
-            `Your Bonus (10%): ${formatCurrency(referralBonus)}\n\n` +
-            `Bonus has been added to your balance!\n` +
-            `New Balance: ${formatCurrency(users[referrerIndex].balance)}`
-          );
-          
-          // Record transaction for referrer
-          const transactions = await loadData(TRANSACTIONS_FILE);
-          transactions.push({
-            id: `REF-BONUS-${Date.now()}`,
-            memberId: referrer.memberId,
-            type: 'referral_bonus',
-            amount: referralBonus,
-            description: `Bonus from ${users[userIndex].name}'s investment`,
-            date: new Date().toISOString()
-          });
-          await saveData(TRANSACTIONS_FILE, transactions);
         }
       }
     }
@@ -4209,6 +4250,13 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       `The investment is now active and earning 2% daily.`
     );
     
+    // Check if this was first investment
+    const userInvestments = investments.filter(inv => 
+      inv.memberId === investment.memberId && 
+      inv.status === 'active'
+    );
+    const isFirstInvestment = userInvestments.length === 1;
+    
     // Notify user
     await sendUserNotification(investment.memberId,
       `✅ **Investment Approved!**\n\n` +
@@ -4216,7 +4264,8 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
       `Amount: ${formatCurrency(investment.amount)}\n` +
       `Investment ID: ${investmentId}\n` +
       `Daily Profit: ${formatCurrency(calculateDailyProfit(investment.amount))}\n` +
-      `Duration: LIFETIME (no expiration)\n\n` +
+      `Duration: LIFETIME (no expiration)\n` +
+      `${isFirstInvestment ? '\n🎉 This is your FIRST investment! If you were referred, your referrer earned 10% bonus.' : ''}\n\n` +
       `Your investment is now earning 2% daily profit!\n` +
       `Check your earnings with /earnings`
     );
@@ -4587,11 +4636,13 @@ bot.onText(/\/referrals/, async (msg) => {
     
     const paidReferrals = referrals.filter(r => r.status === 'paid');
     const pendingReferrals = referrals.filter(r => r.status === 'pending');
+    const firstInvestmentReferrals = referrals.filter(r => r.isFirstInvestment === true);
     
     let message = `👥 **Referrals Summary**\n\n`;
     message += `Total Referrals: ${referrals.length}\n`;
-    message += `Paid: ${paidReferrals.length}\n`;
-    message += `Pending: ${pendingReferrals.length}\n`;
+    message += `Paid (First Investment Bonus): ${paidReferrals.length}\n`;
+    message += `Pending First Investment: ${pendingReferrals.length}\n`;
+    message += `Awaiting First Investment: ${firstInvestmentReferrals.length}\n`;
     message += `Total Bonus Paid: ${formatCurrency(paidReferrals.reduce((sum, r) => sum + (r.bonusAmount || 0), 0))}\n\n`;
     
     // Show recent referrals
@@ -4600,8 +4651,9 @@ bot.onText(/\/referrals/, async (msg) => {
     message += `**Recent Referrals:**\n`;
     recentReferrals.forEach((ref, index) => {
       const status = ref.status === 'paid' ? '✅' : ref.status === 'pending' ? '⏳' : '❌';
+      const firstInv = ref.isFirstInvestment ? 'FIRST' : 'SUBSEQUENT';
       message += `${index + 1}. ${status} ${ref.referrerName} → ${ref.referredName}\n`;
-      message += `   Bonus: ${formatCurrency(ref.bonusAmount || 0)} | ${new Date(ref.date).toLocaleDateString()}\n\n`;
+      message += `   Type: ${firstInv} | Bonus: ${formatCurrency(ref.bonusAmount || 0)} | ${new Date(ref.date).toLocaleDateString()}\n\n`;
     });
     
     await bot.sendMessage(chatId, message);
@@ -4633,6 +4685,7 @@ bot.onText(/\/findref (.+)/, async (msg, match) => {
     const referrals = await loadData(REFERRALS_FILE);
     const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
     const successfulReferrals = userReferrals.filter(r => r.status === 'paid');
+    const firstInvestmentReferrals = userReferrals.filter(r => r.isFirstInvestment === true);
     
     const message = `🔍 **User Found by Referral Code**\n\n` +
                    `Referral Code: ${referralCode}\n` +
@@ -4640,8 +4693,10 @@ bot.onText(/\/findref (.+)/, async (msg, match) => {
                    `Email: ${user.email || 'N/A'}\n` +
                    `Balance: ${formatCurrency(user.balance || 0)}\n` +
                    `Total Referrals: ${user.referrals || 0}\n` +
-                   `Successful Referrals: ${successfulReferrals.length}\n` +
+                   `Successful Referrals (First Investment Bonus): ${successfulReferrals.length}\n` +
+                   `Referrals Awaiting First Investment: ${firstInvestmentReferrals.length}\n` +
                    `Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n` +
+                   `**Note:** Referrers earn 10% only on FIRST investment of referred users.\n\n` +
                    `**View User:** /view ${user.memberId}\n` +
                    `**Message User:** /message ${user.memberId}`;
     
