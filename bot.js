@@ -1,77 +1,198 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const crypto = require('crypto');
-const fs = require('fs').promises;
+const { MongoClient, ObjectId } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// Data storage files
-const USERS_FILE = 'users.json';
-const INVESTMENTS_FILE = 'investments.json';
-const WITHDRAWALS_FILE = 'withdrawals.json';
-const REFERRALS_FILE = 'referrals.json';
-const FAKE_MEMBERS_FILE = 'fake_members.json';
-const TRANSACTIONS_FILE = 'transactions.json';
-const SUPPORT_CHATS_FILE = 'support_chats.json';
-const EARNINGS_VIEWS_FILE = 'earnings_views.json';
-const MEDIA_FILES_FILE = 'media_files.json';
+// MongoDB Configuration
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://starlifeadmin:YOUR_PASSWORD@cluster0.abc123.mongodb.net/starlife?appName=Cluster0';
+const DB_NAME = 'starlife';
+let db;
+let client;
 
-// Initialize storage
-async function initStorage() {
-  const files = [USERS_FILE, INVESTMENTS_FILE, WITHDRAWALS_FILE, REFERRALS_FILE, 
-                FAKE_MEMBERS_FILE, TRANSACTIONS_FILE, SUPPORT_CHATS_FILE, 
-                EARNINGS_VIEWS_FILE, MEDIA_FILES_FILE];
-  
-  for (const file of files) {
-    try {
-      await fs.access(file);
-    } catch {
-      await fs.writeFile(file, JSON.stringify([]));
-    }
+// Collections
+const COLLECTIONS = {
+  USERS: 'users',
+  INVESTMENTS: 'investments',
+  WITHDRAWALS: 'withdrawals',
+  REFERRALS: 'referrals',
+  FAKE_MEMBERS: 'fake_members',
+  TRANSACTIONS: 'transactions',
+  SUPPORT_CHATS: 'support_chats',
+  EARNINGS_VIEWS: 'earnings_views',
+  MEDIA_FILES: 'media_files'
+};
+
+// Initialize MongoDB connection
+async function initMongoDB() {
+  try {
+    client = new MongoClient(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    
+    await client.connect();
+    db = client.db(DB_NAME);
+    console.log('✅ Connected to MongoDB');
+    
+    // Create indexes
+    await createIndexes();
+    console.log('✅ Indexes created');
+    
+    // Initialize fake members if needed
+    await initializeFakeMembers();
+    
+    return true;
+  } catch (error) {
+    console.error('❌ MongoDB connection error:', error.message);
+    return false;
   }
-  
-  const fakeMembers = JSON.parse(await fs.readFile(FAKE_MEMBERS_FILE, 'utf8') || '[]');
-  if (fakeMembers.length === 0) {
-    const initialFakeMembers = generateFakeMembers(50);
-    await fs.writeFile(FAKE_MEMBERS_FILE, JSON.stringify(initialFakeMembers, null, 2));
-  }
-  
-  console.log('✅ Storage initialized');
 }
 
-// Load data
-async function loadData(file) {
+// Create indexes for better performance
+async function createIndexes() {
+  // Users collection
+  await db.collection(COLLECTIONS.USERS).createIndex({ memberId: 1 }, { unique: true });
+  await db.collection(COLLECTIONS.USERS).createIndex({ chatId: 1 }, { unique: true, sparse: true });
+  await db.collection(COLLECTIONS.USERS).createIndex({ email: 1 }, { unique: true, sparse: true });
+  await db.collection(COLLECTIONS.USERS).createIndex({ referralCode: 1 }, { unique: true });
+  
+  // Investments collection
+  await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ memberId: 1 });
+  await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ status: 1 });
+  
+  // Withdrawals collection
+  await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ memberId: 1 });
+  await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ status: 1 });
+  
+  // Referrals collection
+  await db.collection(COLLECTIONS.REFERRALS).createIndex({ referrerId: 1 });
+  await db.collection(COLLECTIONS.REFERRALS).createIndex({ referredId: 1 });
+  
+  // Support chats collection
+  await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ userId: 1 });
+  await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ status: 1 });
+  
+  // Transactions collection
+  await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ memberId: 1 });
+  await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ date: -1 });
+  
+  // Earnings views collection
+  await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewerId: 1 });
+  await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewedId: 1 });
+  
+  // Media files collection
+  await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ chatId: 1 });
+  await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ investmentId: 1 });
+}
+
+// Initialize fake members
+async function initializeFakeMembers() {
   try {
-    const data = await fs.readFile(file, 'utf8');
-    return JSON.parse(data);
+    const count = await db.collection(COLLECTIONS.FAKE_MEMBERS).countDocuments();
+    
+    if (count === 0) {
+      const fakeMembers = generateFakeMembers(50);
+      await db.collection(COLLECTIONS.FAKE_MEMBERS).insertMany(fakeMembers);
+      console.log('✅ Fake members initialized');
+    }
   } catch (error) {
+    console.error('Error initializing fake members:', error.message);
+  }
+}
+
+// Load data from MongoDB
+async function loadData(collectionName, query = {}, sort = {}, limit = 0) {
+  try {
+    const collection = db.collection(collectionName);
+    let cursor = collection.find(query);
+    
+    if (sort && Object.keys(sort).length > 0) {
+      cursor = cursor.sort(sort);
+    }
+    
+    if (limit > 0) {
+      cursor = cursor.limit(limit);
+    }
+    
+    return await cursor.toArray();
+  } catch (error) {
+    console.error(`Error loading data from ${collectionName}:`, error.message);
     return [];
   }
 }
 
-// Save data
-async function saveData(file, data) {
+// Save data to MongoDB (update single document)
+async function saveData(collectionName, filter, update, options = { upsert: true }) {
   try {
-    await fs.writeFile(file, JSON.stringify(data, null, 2));
-    return true;
+    const collection = db.collection(collectionName);
+    const result = await collection.updateOne(filter, update, options);
+    return result;
   } catch (error) {
-    console.log('❌ Error saving data:', error.message);
-    return false;
+    console.error(`Error saving data to ${collectionName}:`, error.message);
+    return null;
+  }
+}
+
+// Insert new document
+async function insertData(collectionName, document) {
+  try {
+    const collection = db.collection(collectionName);
+    const result = await collection.insertOne(document);
+    return result;
+  } catch (error) {
+    console.error(`Error inserting data to ${collectionName}:`, error.message);
+    return null;
+  }
+}
+
+// Update multiple documents
+async function updateMany(collectionName, filter, update) {
+  try {
+    const collection = db.collection(collectionName);
+    const result = await collection.updateMany(filter, update);
+    return result;
+  } catch (error) {
+    console.error(`Error updating multiple in ${collectionName}:`, error.message);
+    return null;
+  }
+}
+
+// Delete documents
+async function deleteData(collectionName, filter) {
+  try {
+    const collection = db.collection(collectionName);
+    const result = await collection.deleteMany(filter);
+    return result;
+  } catch (error) {
+    console.error(`Error deleting data from ${collectionName}:`, error.message);
+    return null;
+  }
+}
+
+// Find one document
+async function findOne(collectionName, query) {
+  try {
+    const collection = db.collection(collectionName);
+    return await collection.findOne(query);
+  } catch (error) {
+    console.error(`Error finding one in ${collectionName}:`, error.message);
+    return null;
   }
 }
 
 // Store media file reference
 async function storeMediaFile(mediaData) {
   try {
-    const mediaFiles = await loadData(MEDIA_FILES_FILE);
-    mediaFiles.push(mediaData);
-    await saveData(MEDIA_FILES_FILE, mediaFiles);
-    return true;
+    mediaData.createdAt = new Date().toISOString();
+    const result = await insertData(COLLECTIONS.MEDIA_FILES, mediaData);
+    return result ? true : false;
   } catch (error) {
-    console.log('❌ Error storing media:', error.message);
+    console.error('Error storing media:', error.message);
     return false;
   }
 }
@@ -79,10 +200,9 @@ async function storeMediaFile(mediaData) {
 // Get media file by ID
 async function getMediaFile(mediaId) {
   try {
-    const mediaFiles = await loadData(MEDIA_FILES_FILE);
-    return mediaFiles.find(media => media.id === mediaId);
+    return await findOne(COLLECTIONS.MEDIA_FILES, { id: mediaId });
   } catch (error) {
-    console.log('❌ Error getting media:', error.message);
+    console.error('Error getting media:', error.message);
     return null;
   }
 }
@@ -105,7 +225,8 @@ function generateFakeMembers(count) {
       profit: profit.toFixed(2),
       referrals: referrals,
       joinDate: new Date(Date.now() - Math.floor(Math.random() * 30) * 24 * 60 * 60 * 1000).toISOString(),
-      isFake: true
+      isFake: true,
+      createdAt: new Date().toISOString()
     });
   }
   
@@ -169,8 +290,7 @@ async function isUserLoggedIn(chatId) {
   }
   
   // Check if user exists and has chatId
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
+  const user = await findOne(COLLECTIONS.USERS, { chatId: chatId.toString() });
   
   return !!user;
 }
@@ -181,8 +301,7 @@ async function canUserAccessAccount(chatId) {
     return false;
   }
   
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
+  const user = await findOne(COLLECTIONS.USERS, { chatId: chatId.toString() });
   
   if (!user) return false;
   if (user.banned) return false;
@@ -196,8 +315,7 @@ async function getLoggedInUser(chatId) {
     return null;
   }
   
-  const users = await loadData(USERS_FILE);
-  const user = users.find(u => u.chatId === chatId.toString());
+  const user = await findOne(COLLECTIONS.USERS, { chatId: chatId.toString() });
   
   if (!user || user.banned) {
     return null;
@@ -208,26 +326,22 @@ async function getLoggedInUser(chatId) {
 
 // Get user by member ID
 async function getUserByMemberId(memberId) {
-  const users = await loadData(USERS_FILE);
-  return users.find(u => u.memberId === memberId);
+  return await findOne(COLLECTIONS.USERS, { memberId: memberId });
 }
 
 // Get user by chat ID (for Telegram account binding)
 async function getUserByChatId(chatId) {
-  const users = await loadData(USERS_FILE);
-  return users.find(u => u.chatId === chatId.toString());
+  return await findOne(COLLECTIONS.USERS, { chatId: chatId.toString() });
 }
 
 // Get user by email
 async function getUserByEmail(email) {
-  const users = await loadData(USERS_FILE);
-  return users.find(u => u.email && u.email.toLowerCase() === email.toLowerCase());
+  return await findOne(COLLECTIONS.USERS, { email: email.toLowerCase() });
 }
 
 // Check if Telegram account is already bound to a different user (SECURITY FIX)
 async function isChatIdBoundToDifferentUser(chatId, requestedMemberId) {
-  const users = await loadData(USERS_FILE);
-  const userByChatId = users.find(u => u.chatId === chatId.toString());
+  const userByChatId = await getUserByChatId(chatId);
   
   if (!userByChatId) return false; // No binding exists
   
@@ -237,8 +351,7 @@ async function isChatIdBoundToDifferentUser(chatId, requestedMemberId) {
 
 // Check if member ID is already bound to a different Telegram account (SECURITY FIX)
 async function isMemberIdBoundToDifferentChat(memberId, chatId) {
-  const users = await loadData(USERS_FILE);
-  const userByMemberId = users.find(u => u.memberId === memberId);
+  const userByMemberId = await getUserByMemberId(memberId);
   
   if (!userByMemberId || !userByMemberId.chatId) return false; // No binding exists
   
@@ -248,18 +361,16 @@ async function isMemberIdBoundToDifferentChat(memberId, chatId) {
 
 // Get active support chat for user
 async function getActiveSupportChat(userId) {
-  const supportChats = await loadData(SUPPORT_CHATS_FILE);
-  return supportChats.find(chat => 
-    (chat.userId === userId || chat.userId === `LOGGED_OUT_${userId}`) && 
-    chat.status === 'active'
-  );
+  return await findOne(COLLECTIONS.SUPPORT_CHATS, { 
+    userId: userId,
+    status: 'active'
+  });
 }
 
 // Send notification to user (works even if logged out - FIXED)
 async function sendUserNotification(memberId, message) {
   try {
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
     if (!user) {
       console.log(`User ${memberId} not found`);
@@ -281,13 +392,11 @@ async function sendUserNotification(memberId, message) {
       
       // If user was logged out, update last notification time
       if (isLoggedOut) {
-        const userIndex = users.findIndex(u => u.memberId === memberId);
-        if (userIndex !== -1) {
-          users[userIndex].lastNotification = new Date().toISOString();
-          await saveData(USERS_FILE, users);
-          
-          console.log(`Message sent to logged out user ${memberId}`);
-        }
+        await saveData(COLLECTIONS.USERS, 
+          { memberId: memberId },
+          { $set: { lastNotification: new Date().toISOString() } }
+        );
+        console.log(`Message sent to logged out user ${memberId}`);
       }
       
       return true;
@@ -299,11 +408,10 @@ async function sendUserNotification(memberId, message) {
         console.log(`User ${memberId} has blocked the bot`);
         
         // Mark user as unavailable
-        const userIndex = users.findIndex(u => u.memberId === memberId);
-        if (userIndex !== -1) {
-          users[userIndex].botBlocked = true;
-          await saveData(USERS_FILE, users);
-        }
+        await saveData(COLLECTIONS.USERS,
+          { memberId: memberId },
+          { $set: { botBlocked: true } }
+        );
       }
       
       return false;
@@ -317,31 +425,28 @@ async function sendUserNotification(memberId, message) {
 // Store message for user who can't receive it now
 async function storeOfflineMessage(memberId, message, type = 'admin_message') {
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
-    
-    if (userIndex === -1) return false;
-    
-    // Initialize offlineMessages if not exists
-    if (!users[userIndex].offlineMessages) {
-      users[userIndex].offlineMessages = [];
-    }
-    
-    // Store the message
-    users[userIndex].offlineMessages.push({
-      id: `MSG-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    const messageId = `MSG-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    const offlineMessage = {
+      id: messageId,
       type: type,
       message: message,
       timestamp: new Date().toISOString(),
       read: false
-    });
+    };
     
-    // Keep only last 50 messages
-    if (users[userIndex].offlineMessages.length > 50) {
-      users[userIndex].offlineMessages = users[userIndex].offlineMessages.slice(-50);
-    }
+    // Add to user's offline messages array
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { 
+        $push: { 
+          offlineMessages: {
+            $each: [offlineMessage],
+            $slice: -50 // Keep only last 50 messages
+          }
+        }
+      }
+    );
     
-    await saveData(USERS_FILE, users);
     return true;
   } catch (error) {
     console.log('Error storing offline message:', error.message);
@@ -352,8 +457,7 @@ async function storeOfflineMessage(memberId, message, type = 'admin_message') {
 // Helper function to send direct message to user (UPDATED)
 async function sendDirectMessageToUser(adminChatId, memberId, messageText) {
   try {
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
     if (!user) {
       await bot.sendMessage(adminChatId, `❌ User ${memberId} not found.`);
@@ -402,7 +506,6 @@ async function sendDirectMessageToUser(adminChatId, memberId, messageText) {
     }
     
     // Record this message in support chats
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
     const adminMessageChat = {
       id: `ADMIN-MSG-${Date.now()}`,
       userId: memberId,
@@ -421,8 +524,7 @@ async function sendDirectMessageToUser(adminChatId, memberId, messageText) {
       isDirectMessage: true
     };
     
-    supportChats.push(adminMessageChat);
-    await saveData(SUPPORT_CHATS_FILE, supportChats);
+    await insertData(COLLECTIONS.SUPPORT_CHATS, adminMessageChat);
     
   } catch (error) {
     console.log('Error sending direct message:', error.message);
@@ -436,10 +538,9 @@ async function sendDirectMessageToUser(adminChatId, memberId, messageText) {
 // Handle media files in support chats
 async function handleSupportMedia(chatId, fileId, fileType, caption = '', session) {
   try {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+    const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
     
-    if (chatIndex === -1) {
+    if (!supportChat) {
       await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
       delete userSessions[chatId];
       return;
@@ -461,18 +562,24 @@ async function handleSupportMedia(chatId, fileId, fileType, caption = '', sessio
     });
     
     // Add media message to chat
-    supportChats[chatIndex].messages.push({
-      sender: session.data.memberId ? 'user' : 'anonymous',
-      message: caption || `[${fileType.toUpperCase()} sent]`,
-      mediaId: mediaId,
-      fileType: fileType,
-      timestamp: new Date().toISOString()
-    });
-    
-    supportChats[chatIndex].updatedAt = new Date().toISOString();
-    supportChats[chatIndex].adminReplied = false;
-    
-    await saveData(SUPPORT_CHATS_FILE, supportChats);
+    await saveData(COLLECTIONS.SUPPORT_CHATS,
+      { id: session.data.chatId },
+      { 
+        $push: { 
+          messages: {
+            sender: session.data.memberId ? 'user' : 'anonymous',
+            message: caption || `[${fileType.toUpperCase()} sent]`,
+            mediaId: mediaId,
+            fileType: fileType,
+            timestamp: new Date().toISOString()
+          }
+        },
+        $set: {
+          updatedAt: new Date().toISOString(),
+          adminReplied: false
+        }
+      }
+    );
     
     // Confirm to user
     await bot.sendMessage(chatId,
@@ -485,9 +592,8 @@ async function handleSupportMedia(chatId, fileId, fileType, caption = '', sessio
     // Notify admins about media
     const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
     if (adminIds.length > 0) {
-      const chat = supportChats[chatIndex];
-      const userName = chat.userName || 'Unknown User';
-      const userId = chat.userId || 'Anonymous';
+      const userName = supportChat.userName || 'Unknown User';
+      const userId = supportChat.userId || 'Anonymous';
       
       const adminMessage = `📎 **New Media in Support Chat**\n\n` +
                           `Chat ID: ${session.data.chatId}\n` +
@@ -552,9 +658,13 @@ async function forwardMediaToAdmin(adminChatId, mediaId) {
 const server = app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   try {
-    await initStorage();
-    scheduleDailyProfits();
-    console.log('✅ Bot system initialized successfully');
+    const mongoConnected = await initMongoDB();
+    if (mongoConnected) {
+      scheduleDailyProfits();
+      console.log('✅ Bot system initialized successfully');
+    } else {
+      console.log('❌ Failed to connect to MongoDB');
+    }
   } catch (error) {
     console.log('❌ Initialization error:', error.message);
   }
@@ -599,40 +709,47 @@ const adminSessions = {};
 function scheduleDailyProfits() {
   setInterval(async () => {
     try {
-      const investments = await loadData(INVESTMENTS_FILE);
-      const users = await loadData(USERS_FILE);
+      const investments = await loadData(COLLECTIONS.INVESTMENTS, { status: 'active' });
       
-      const activeInvestments = investments.filter(inv => inv.status === 'active');
-      
-      for (const investment of activeInvestments) {
+      for (const investment of investments) {
         const dailyProfit = calculateDailyProfit(investment.amount);
         
-        const userIndex = users.findIndex(u => u.memberId === investment.memberId);
-        if (userIndex !== -1) {
-          users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + dailyProfit;
-          users[userIndex].totalEarned = (parseFloat(users[userIndex].totalEarned) || 0) + dailyProfit;
-          
-          const transactions = await loadData(TRANSACTIONS_FILE);
-          transactions.push({
-            id: `TRX-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            memberId: investment.memberId,
-            type: 'daily_profit',
-            amount: dailyProfit,
-            description: `Daily profit from investment #${investment.id}`,
-            date: new Date().toISOString()
-          });
-          await saveData(TRANSACTIONS_FILE, transactions);
-        }
+        // Update user balance
+        await saveData(COLLECTIONS.USERS,
+          { memberId: investment.memberId },
+          { 
+            $inc: { 
+              balance: dailyProfit,
+              totalEarned: dailyProfit
+            }
+          }
+        );
         
-        investment.totalProfit = (parseFloat(investment.totalProfit) || 0) + dailyProfit;
+        // Record transaction
+        await insertData(COLLECTIONS.TRANSACTIONS, {
+          id: `TRX-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          memberId: investment.memberId,
+          type: 'daily_profit',
+          amount: dailyProfit,
+          description: `Daily profit from investment #${investment.id}`,
+          date: new Date().toISOString()
+        });
+        
+        // Update investment profit
+        await saveData(COLLECTIONS.INVESTMENTS,
+          { id: investment.id },
+          { 
+            $inc: { 
+              totalProfit: dailyProfit,
+              daysActive: 1
+            }
+          }
+        );
         
         // Removed 30-day completion check - investments now continue indefinitely
       }
       
-      await saveData(USERS_FILE, users);
-      await saveData(INVESTMENTS_FILE, investments);
-      
-      console.log('✅ Daily profits calculated for', activeInvestments.length, 'investments');
+      console.log('✅ Daily profits calculated for', investments.length, 'investments');
     } catch (error) {
       console.log('❌ Error calculating daily profits:', error.message);
     }
@@ -654,8 +771,7 @@ bot.on('photo', async (msg) => {
       const fileId = photo.file_id;
       const caption = msg.caption || '';
       
-      // Store investment with pending status
-      const investments = await loadData(INVESTMENTS_FILE);
+      // Create investment with pending status
       const investmentId = `INV-${Date.now()}`;
       
       const investment = {
@@ -664,7 +780,7 @@ bot.on('photo', async (msg) => {
         amount: session.data.amount,
         paymentMethod: session.data.paymentMethod,
         transactionHash: session.data.transactionHash || '',
-        status: 'pending', // Changed from 'active' to 'pending'
+        status: 'pending',
         date: new Date().toISOString(),
         daysActive: 0,
         totalProfit: 0,
@@ -672,8 +788,7 @@ bot.on('photo', async (msg) => {
         proofCaption: caption || `Payment proof for $${session.data.amount}`
       };
       
-      investments.push(investment);
-      await saveData(INVESTMENTS_FILE, investments);
+      await insertData(COLLECTIONS.INVESTMENTS, investment);
       
       // Store media file
       await storeMediaFile({
@@ -701,8 +816,7 @@ bot.on('photo', async (msg) => {
       // Notify admins
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
-        const users = await loadData(USERS_FILE);
-        const user = users.find(u => u.memberId === session.data.memberId);
+        const user = await getUserByMemberId(session.data.memberId);
         
         const adminMessage = `📈 **New Investment Request**\n\n` +
                             `Investment ID: ${investmentId}\n` +
@@ -841,8 +955,7 @@ bot.onText(/\/start/, async (msg) => {
   const isLoggedIn = await isUserLoggedIn(chatId);
   
   if (isLoggedIn) {
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.chatId === chatId.toString());
+    const user = await getUserByChatId(chatId);
     
     if (user) {
       if (user.banned) {
@@ -857,8 +970,11 @@ bot.onText(/\/start/, async (msg) => {
         return;
       }
       
-      user.lastLogin = new Date().toISOString();
-      await saveData(USERS_FILE, users);
+      // Update last login
+      await saveData(COLLECTIONS.USERS,
+        { chatId: chatId.toString() },
+        { $set: { lastLogin: new Date().toISOString() } }
+      );
       
       const welcomeMessage = `👋 Welcome back, ${user.name}!\n\n` +
                             `💰 Balance: ${formatCurrency(user.balance || 0)}\n` +
@@ -888,11 +1004,10 @@ bot.onText(/\/start/, async (msg) => {
   }
   
   // User is not logged in - show public welcome
-  const fakeMembers = await loadData(FAKE_MEMBERS_FILE);
-  const recentSuccess = fakeMembers.slice(0, 3);
+  const fakeMembers = await loadData(COLLECTIONS.FAKE_MEMBERS, {}, {}, 3);
   
   let fakeMessage = '🌟 **Recent Success Stories:**\n\n';
-  recentSuccess.forEach(member => {
+  fakeMembers.forEach(member => {
     fakeMessage += `✅ ${member.name} invested ${formatCurrency(member.investment)} & earned ${formatCurrency(member.profit)}\n`;
   });
   
@@ -1022,24 +1137,22 @@ bot.onText(/\/transactions/, async (msg) => {
   }
   
   try {
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    const userTransactions = transactions.filter(t => t.memberId === user.memberId);
+    const transactions = await loadData(
+      COLLECTIONS.TRANSACTIONS, 
+      { memberId: user.memberId },
+      { date: -1 },
+      10
+    );
     
-    if (userTransactions.length === 0) {
+    if (transactions.length === 0) {
       await bot.sendMessage(chatId, '📭 No transactions found.');
       return;
     }
     
-    // Sort by date (newest first)
-    userTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-    
     let message = `📊 **Transaction History**\n\n`;
-    message += `Total Transactions: ${userTransactions.length}\n\n`;
+    message += `Total Transactions: ${transactions.length}\n\n`;
     
-    // Show last 10 transactions
-    const recentTransactions = userTransactions.slice(0, 10);
-    
-    recentTransactions.forEach((tx, index) => {
+    transactions.forEach((tx, index) => {
       const date = new Date(tx.date).toLocaleDateString();
       const time = new Date(tx.date).toLocaleTimeString();
       const amount = parseFloat(tx.amount);
@@ -1063,21 +1176,21 @@ bot.onText(/\/transactions/, async (msg) => {
       message += `\n`;
     });
     
-    if (userTransactions.length > 10) {
-      message += `... and ${userTransactions.length - 10} more transactions\n`;
-      message += `Use /support to request full transaction history\n`;
-    }
-    
     // Calculate totals
-    const totalDeposits = userTransactions
+    const allTransactions = await loadData(
+      COLLECTIONS.TRANSACTIONS, 
+      { memberId: user.memberId }
+    );
+    
+    const totalDeposits = allTransactions
       .filter(t => t.amount > 0 && t.type !== 'daily_profit')
       .reduce((sum, t) => sum + t.amount, 0);
     
-    const totalWithdrawals = userTransactions
+    const totalWithdrawals = allTransactions
       .filter(t => t.amount < 0)
       .reduce((sum, t) => sum + Math.abs(t.amount), 0);
     
-    const totalProfits = userTransactions
+    const totalProfits = allTransactions
       .filter(t => t.type === 'daily_profit')
       .reduce((sum, t) => sum + t.amount, 0);
     
@@ -1214,8 +1327,10 @@ bot.onText(/\/earnings/, async (msg) => {
     return;
   }
   
-  const investments = await loadData(INVESTMENTS_FILE);
-  const userInvestments = investments.filter(inv => inv.memberId === user.memberId);
+  const investments = await loadData(COLLECTIONS.INVESTMENTS, { 
+    memberId: user.memberId,
+    status: 'active'
+  });
   
   let message = `📈 **Your Earnings**\n\n`;
   message += `💰 Balance: ${formatCurrency(user.balance || 0)}\n`;
@@ -1223,9 +1338,9 @@ bot.onText(/\/earnings/, async (msg) => {
   message += `💵 Total Invested: ${formatCurrency(user.totalInvested || 0)}\n`;
   message += `👥 Referral Earnings: ${formatCurrency(user.referralEarnings || 0)}\n\n`;
   
-  if (userInvestments.length > 0) {
+  if (investments.length > 0) {
     message += `**Active Investments:**\n`;
-    userInvestments.filter(inv => inv.status === 'active').forEach(inv => {
+    investments.forEach(inv => {
       const dailyProfit = calculateDailyProfit(inv.amount);
       message += `• ${formatCurrency(inv.amount)} - Daily: ${formatCurrency(dailyProfit)}\n`;
     });
@@ -1271,8 +1386,7 @@ bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const targetUser = users.find(u => u.memberId === targetMemberId);
+    const targetUser = await getUserByMemberId(targetMemberId);
     
     if (!targetUser) {
       await bot.sendMessage(chatId, `❌ User ${targetMemberId} not found.`);
@@ -1280,13 +1394,13 @@ bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
     }
     
     // Deduct fee from user
-    const userIndex = users.findIndex(u => u.memberId === user.memberId);
-    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - fee;
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: user.memberId },
+      { $inc: { balance: -fee } }
+    );
     
     // Record transaction
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    transactions.push({
+    await insertData(COLLECTIONS.TRANSACTIONS, {
       id: `VIEW-EARN-${Date.now()}`,
       memberId: user.memberId,
       type: 'view_earnings_fee',
@@ -1294,35 +1408,33 @@ bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
       description: `Fee to view ${targetMemberId}'s earnings`,
       date: new Date().toISOString()
     });
-    await saveData(TRANSACTIONS_FILE, transactions);
     
     // Record earnings view
-    const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
-    earningsViews.push({
+    await insertData(COLLECTIONS.EARNINGS_VIEWS, {
       id: `VIEW-${Date.now()}`,
       viewerId: user.memberId,
       viewedId: targetMemberId,
       fee: fee,
       date: new Date().toISOString()
     });
-    await saveData(EARNINGS_VIEWS_FILE, earningsViews);
     
     // Get target user's investments
-    const investments = await loadData(INVESTMENTS_FILE);
-    const targetInvestments = investments.filter(inv => inv.memberId === targetMemberId);
-    const activeInvestments = targetInvestments.filter(inv => inv.status === 'active');
+    const targetInvestments = await loadData(COLLECTIONS.INVESTMENTS, { 
+      memberId: targetMemberId,
+      status: 'active'
+    });
     
     let message = `👤 **Earnings Report for ${targetUser.name} (${targetMemberId})**\n\n`;
     message += `💰 Balance: ${formatCurrency(targetUser.balance || 0)}\n`;
     message += `📊 Total Earned: ${formatCurrency(targetUser.totalEarned || 0)}\n`;
     message += `💵 Total Invested: ${formatCurrency(targetUser.totalInvested || 0)}\n`;
     message += `👥 Referral Earnings: ${formatCurrency(targetUser.referralEarnings || 0)}\n`;
-    message += `📈 Active Investments: ${activeInvestments.length}\n`;
+    message += `📈 Active Investments: ${targetInvestments.length}\n`;
     message += `👥 Total Referrals: ${targetUser.referrals || 0}\n\n`;
     
-    if (activeInvestments.length > 0) {
+    if (targetInvestments.length > 0) {
       message += `**Active Investments:**\n`;
-      activeInvestments.forEach((inv, index) => {
+      targetInvestments.forEach((inv, index) => {
         const dailyProfit = calculateDailyProfit(inv.amount);
         message += `${index + 1}. ${formatCurrency(inv.amount)} - Daily: ${formatCurrency(dailyProfit)}\n`;
       });
@@ -1330,7 +1442,7 @@ bot.onText(/\/viewearnings (.+)/, async (msg, match) => {
     
     message += `\n---\n`;
     message += `Fee paid: ${formatCurrency(fee)}\n`;
-    message += `Your new balance: ${formatCurrency(users[userIndex].balance)}`;
+    message += `Your new balance: ${formatCurrency((user.balance || 0) - fee)}`;
     
     await bot.sendMessage(chatId, message);
   } catch (error) {
@@ -1350,9 +1462,8 @@ bot.onText(/\/profile/, async (msg) => {
     return;
   }
   
-  const referrals = await loadData(REFERRALS_FILE);
-  const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
-  const successfulReferrals = userReferrals.filter(r => r.status === 'paid');
+  const referrals = await loadData(COLLECTIONS.REFERRALS, { referrerId: user.memberId });
+  const successfulReferrals = referrals.filter(r => r.status === 'paid');
   
   let message = `👤 **Your Profile**\n\n`;
   message += `Name: ${user.name}\n`;
@@ -1389,8 +1500,7 @@ bot.onText(/\/referral/, async (msg) => {
     return;
   }
   
-  const referrals = await loadData(REFERRALS_FILE);
-  const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
+  const referrals = await loadData(COLLECTIONS.REFERRALS, { referrerId: user.memberId });
   
   let message = `👥 **Referral Program**\n\n`;
   message += `**Earn 10% commission on your referrals' FIRST investment only!**\n\n`;
@@ -1407,8 +1517,8 @@ bot.onText(/\/referral/, async (msg) => {
   message += `/register ${user.referralCode}\n\n`;
   message += `**Your Referrals:**\n`;
   
-  if (userReferrals.length > 0) {
-    userReferrals.forEach((ref, index) => {
+  if (referrals.length > 0) {
+    referrals.forEach((ref, index) => {
       const status = ref.status === 'paid' ? '✅ Bonus Paid' : 
                     ref.status === 'pending' ? '⏳ Pending First Investment' : '❌ Failed';
       const bonus = ref.bonusAmount ? `- Bonus: ${formatCurrency(ref.bonusAmount)}` : '';
@@ -1432,10 +1542,10 @@ bot.onText(/\/withdraw/, async (msg) => {
     return;
   }
   
-  if ((user.balance || 0) < 2) { // Changed from 10 to 2
+  if ((user.balance || 0) < 2) {
     await bot.sendMessage(chatId,
       `❌ **Insufficient Balance**\n\n` +
-      `Minimum withdrawal: $2\n` + // Updated message
+      `Minimum withdrawal: $2\n` +
       `Your balance: ${formatCurrency(user.balance || 0)}\n\n` +
       `Please earn more through investments first.`
     );
@@ -1453,7 +1563,7 @@ bot.onText(/\/withdraw/, async (msg) => {
   await bot.sendMessage(chatId,
     `💳 **Withdraw Funds**\n\n` +
     `Your Balance: ${formatCurrency(user.balance || 0)}\n` +
-    `Minimum Withdrawal: $2\n` + // Updated message
+    `Minimum Withdrawal: $2\n` +
     `Withdrawal Fee: 5%\n\n` +
     `Enter amount to withdraw:`
   );
@@ -1500,20 +1610,12 @@ bot.onText(/\/inbox/, async (msg) => {
     return;
   }
   
-  const users = await loadData(USERS_FILE);
-  const userIndex = users.findIndex(u => u.memberId === user.memberId);
-  
-  if (userIndex === -1) {
-    await bot.sendMessage(chatId, '❌ User not found.');
-    return;
-  }
-  
-  if (!users[userIndex].offlineMessages || users[userIndex].offlineMessages.length === 0) {
+  if (!user.offlineMessages || user.offlineMessages.length === 0) {
     await bot.sendMessage(chatId, '📭 Your inbox is empty.');
     return;
   }
   
-  const offlineMessages = users[userIndex].offlineMessages;
+  const offlineMessages = user.offlineMessages;
   const unreadMessages = offlineMessages.filter(msg => !msg.read);
   
   let message = `📬 **Your Inbox**\n\n`;
@@ -1545,10 +1647,10 @@ bot.onText(/\/inbox/, async (msg) => {
   
   // Mark messages as read when user views inbox
   if (unreadMessages.length > 0) {
-    users[userIndex].offlineMessages.forEach(msg => {
-      msg.read = true;
-    });
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: user.memberId },
+      { $set: { 'offlineMessages.$[].read': true } }
+    );
   }
 });
 
@@ -1562,14 +1664,11 @@ bot.onText(/\/readmsgs/, async (msg) => {
     return;
   }
   
-  const users = await loadData(USERS_FILE);
-  const userIndex = users.findIndex(u => u.memberId === user.memberId);
-  
-  if (userIndex !== -1 && users[userIndex].offlineMessages) {
-    users[userIndex].offlineMessages.forEach(msg => {
-      msg.read = true;
-    });
-    await saveData(USERS_FILE, users);
+  if (user.offlineMessages) {
+    await saveData(COLLECTIONS.USERS,
+      { memberId: user.memberId },
+      { $set: { 'offlineMessages.$[].read': true } }
+    );
     await bot.sendMessage(chatId, '✅ All messages marked as read.');
   }
 });
@@ -1584,14 +1683,11 @@ bot.onText(/\/clearmsgs/, async (msg) => {
     return;
   }
   
-  const users = await loadData(USERS_FILE);
-  const userIndex = users.findIndex(u => u.memberId === user.memberId);
-  
-  if (userIndex !== -1) {
-    users[userIndex].offlineMessages = [];
-    await saveData(USERS_FILE, users);
-    await bot.sendMessage(chatId, '✅ All messages cleared.');
-  }
+  await saveData(COLLECTIONS.USERS,
+    { memberId: user.memberId },
+    { $set: { offlineMessages: [] } }
+  );
+  await bot.sendMessage(chatId, '✅ All messages cleared.');
 });
 
 // Enhanced support system that works for everyone
@@ -1608,8 +1704,7 @@ bot.onText(/\/support/, async (msg) => {
   
   if (isLoggedIn) {
     // Logged in user - regular support
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.chatId === chatId.toString());
+    const user = await getUserByChatId(chatId);
     
     // Check for active support chat
     const activeChat = await getActiveSupportChat(user.memberId);
@@ -1722,15 +1817,16 @@ bot.onText(/\/endsupport/, async (msg) => {
   
   const session = userSessions[chatId];
   if (session && (session.step === 'support_chat' || session.step === 'support_loggedout_chat' || session.step === 'universal_support_chat' || session.step === 'appeal_chat')) {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
-    
-    if (chatIndex !== -1) {
-      supportChats[chatIndex].status = 'closed';
-      supportChats[chatIndex].updatedAt = new Date().toISOString();
-      supportChats[chatIndex].closedBy = 'user';
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
-    }
+    await saveData(COLLECTIONS.SUPPORT_CHATS,
+      { id: session.data.chatId },
+      { 
+        $set: { 
+          status: 'closed',
+          updatedAt: new Date().toISOString(),
+          closedBy: 'user'
+        }
+      }
+    );
     
     delete userSessions[chatId];
     
@@ -1756,10 +1852,7 @@ bot.onText(/\/appeal/, async (msg) => {
     return;
   }
   
-  const users = await loadData(USERS_FILE);
-  const currentUser = users.find(u => u.memberId === user.memberId);
-  
-  if (!currentUser.banned) {
+  if (!user.banned) {
     await bot.sendMessage(chatId, '✅ Your account is not suspended. Use /support for other issues.');
     return;
   }
@@ -1790,8 +1883,7 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   const referralCode = match[1] ? match[1].trim().toUpperCase() : null;
   
   // Check if this Telegram account is already registered (SECURITY FIX)
-  const users = await loadData(USERS_FILE);
-  const existingUser = users.find(u => u.chatId === chatId.toString());
+  const existingUser = await getUserByChatId(chatId);
   
   if (existingUser) {
     await bot.sendMessage(chatId,
@@ -1824,7 +1916,7 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   
   if (referralCode) {
     // Check if referral code is valid
-    const referrer = users.find(u => u.referralCode === referralCode);
+    const referrer = await findOne(COLLECTIONS.USERS, { referralCode: referralCode });
     if (referrer) {
       registrationMessage += `✅ **Referral Code Applied!**\n`;
       registrationMessage += `Referred by: ${referrer.name}\n`;
@@ -1932,8 +2024,7 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'forgot_password_memberid') {
       const memberId = text.trim().toUpperCase();
-      const users = await loadData(USERS_FILE);
-      const user = users.find(u => u.memberId === memberId);
+      const user = await getUserByMemberId(memberId);
       
       if (!user) {
         await bot.sendMessage(chatId, '❌ Member ID not found. Please check and try again:');
@@ -1948,10 +2039,16 @@ bot.on('message', async (msg) => {
       
       // Generate new password
       const newPassword = generateRandomPassword(8);
-      const userIndex = users.findIndex(u => u.memberId === memberId);
-      users[userIndex].passwordHash = hashPassword(newPassword);
       
-      await saveData(USERS_FILE, users);
+      await saveData(COLLECTIONS.USERS,
+        { memberId: memberId },
+        { 
+          $set: { 
+            passwordHash: hashPassword(newPassword),
+            lastPasswordChange: new Date().toISOString()
+          }
+        }
+      );
       
       delete userSessions[chatId];
       
@@ -1979,8 +2076,7 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'forgot_password_email') {
       const email = text.trim().toLowerCase();
-      const users = await loadData(USERS_FILE);
-      const user = users.find(u => u.email && u.email.toLowerCase() === email);
+      const user = await getUserByEmail(email);
       
       if (!user) {
         await bot.sendMessage(chatId, '❌ Email not found. Please check and try again:');
@@ -1995,10 +2091,16 @@ bot.on('message', async (msg) => {
       
       // Generate new password
       const newPassword = generateRandomPassword(8);
-      const userIndex = users.findIndex(u => u.email && u.email.toLowerCase() === email);
-      users[userIndex].passwordHash = hashPassword(newPassword);
       
-      await saveData(USERS_FILE, users);
+      await saveData(COLLECTIONS.USERS,
+        { email: email.toLowerCase() },
+        { 
+          $set: { 
+            passwordHash: hashPassword(newPassword),
+            lastPasswordChange: new Date().toISOString()
+          }
+        }
+      );
       
       delete userSessions[chatId];
       
@@ -2028,10 +2130,9 @@ bot.on('message', async (msg) => {
     // Handle change password steps
     else if (session.step === 'change_password_current') {
       const currentPassword = text.trim();
-      const users = await loadData(USERS_FILE);
-      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
+      const user = await getUserByMemberId(session.data.memberId);
       
-      if (userIndex === -1 || users[userIndex].passwordHash !== hashPassword(currentPassword)) {
+      if (!user || user.passwordHash !== hashPassword(currentPassword)) {
         await bot.sendMessage(chatId, '❌ Current password is incorrect. Please try again:');
         return;
       }
@@ -2077,19 +2178,15 @@ bot.on('message', async (msg) => {
       }
       
       // Update password in database
-      const users = await loadData(USERS_FILE);
-      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
-      
-      if (userIndex === -1) {
-        await bot.sendMessage(chatId, '❌ User not found.');
-        delete userSessions[chatId];
-        return;
-      }
-      
-      users[userIndex].passwordHash = hashPassword(session.data.newPassword);
-      users[userIndex].lastPasswordChange = new Date().toISOString();
-      
-      await saveData(USERS_FILE, users);
+      await saveData(COLLECTIONS.USERS,
+        { memberId: session.data.memberId },
+        { 
+          $set: { 
+            passwordHash: hashPassword(session.data.newPassword),
+            lastPasswordChange: new Date().toISOString()
+          }
+        }
+      );
       
       delete userSessions[chatId];
       
@@ -2173,8 +2270,8 @@ bot.on('message', async (msg) => {
       }
       
       // Generate member ID
-      const users = await loadData(USERS_FILE);
-      const memberId = `USER-${String(users.length + 1000)}`;
+      const usersCount = await db.collection(COLLECTIONS.USERS).countDocuments();
+      const memberId = `USER-${String(usersCount + 1000)}`;
       
       // Generate referral code
       const referralCode = `REF-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
@@ -2182,7 +2279,7 @@ bot.on('message', async (msg) => {
       // Check if referral code is valid
       let referredBy = null;
       if (session.data.referralCode) {
-        const referrer = users.find(u => u.referralCode === session.data.referralCode);
+        const referrer = await findOne(COLLECTIONS.USERS, { referralCode: session.data.referralCode });
         if (referrer) {
           referredBy = session.data.referralCode;
         }
@@ -2191,9 +2288,9 @@ bot.on('message', async (msg) => {
       // Create new user - BIND THIS TELEGRAM ACCOUNT TO THIS MEMBER ID ONLY
       const newUser = {
         memberId: memberId,
-        chatId: chatId.toString(), // This binds the Telegram account
+        chatId: chatId.toString(),
         name: session.data.name,
-        email: session.data.email,
+        email: session.data.email.toLowerCase(),
         passwordHash: hashPassword(session.data.password),
         balance: 0,
         totalInvested: 0,
@@ -2207,24 +2304,27 @@ bot.on('message', async (msg) => {
         lastLogin: new Date().toISOString(),
         banned: false,
         botBlocked: false,
-        accountBound: true, // Mark account as bound to Telegram
-        telegramAccountId: chatId.toString(), // Store Telegram account ID
-        offlineMessages: []
+        accountBound: true,
+        telegramAccountId: chatId.toString(),
+        offlineMessages: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
       
-      users.push(newUser);
-      await saveData(USERS_FILE, users);
+      await insertData(COLLECTIONS.USERS, newUser);
       
       // Handle referral tracking if user was referred
       if (referredBy) {
-        const referrer = users.find(u => u.referralCode === referredBy);
+        const referrer = await findOne(COLLECTIONS.USERS, { referralCode: referredBy });
         if (referrer) {
           // Update referrer's referral count
-          referrer.referrals = (referrer.referrals || 0) + 1;
+          await saveData(COLLECTIONS.USERS,
+            { memberId: referrer.memberId },
+            { $inc: { referrals: 1 } }
+          );
           
           // Create referral record
-          const referrals = await loadData(REFERRALS_FILE);
-          referrals.push({
+          await insertData(COLLECTIONS.REFERRALS, {
             id: `REF-${Date.now()}`,
             referrerId: referrer.memberId,
             referrerName: referrer.name,
@@ -2236,18 +2336,16 @@ bot.on('message', async (msg) => {
             date: new Date().toISOString(),
             investmentAmount: 0,
             isFirstInvestment: true,
-            bonusPaid: false
+            bonusPaid: false,
+            createdAt: new Date().toISOString()
           });
-          
-          await saveData(REFERRALS_FILE, referrals);
-          await saveData(USERS_FILE, users);
           
           // Notify referrer
           await sendUserNotification(referrer.memberId,
             `🎉 **New Referral!**\n\n` +
             `${session.data.name} registered using your referral code!\n` +
             `You will earn 10% when they make their FIRST investment.\n\n` +
-            `Total Referrals: ${referrer.referrals}`
+            `Total Referrals: ${(referrer.referrals || 0) + 1}`
           );
         }
       }
@@ -2303,23 +2401,21 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, welcomeMessage);
       
       // Record transaction
-      const transactions = await loadData(TRANSACTIONS_FILE);
-      transactions.push({
+      await insertData(COLLECTIONS.TRANSACTIONS, {
         id: `TRX-REG-${Date.now()}`,
         memberId: memberId,
         type: 'registration',
         amount: 0,
         description: 'Account registration',
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString()
       });
-      await saveData(TRANSACTIONS_FILE, transactions);
     }
     
     // Handle login steps - UPDATED WITH SECURITY CHECKS
     else if (session.step === 'login_memberid') {
       const memberId = text.trim().toUpperCase();
-      const users = await loadData(USERS_FILE);
-      const user = users.find(u => u.memberId === memberId);
+      const user = await getUserByMemberId(memberId);
       
       if (!user) {
         await bot.sendMessage(chatId, '❌ Member ID not found. Please check and try again:');
@@ -2370,8 +2466,7 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'login_password') {
       const password = text.trim();
-      const users = await loadData(USERS_FILE);
-      const user = users.find(u => u.memberId === session.data.memberId);
+      const user = await getUserByMemberId(session.data.memberId);
       
       if (!user || user.passwordHash !== hashPassword(password)) {
         await bot.sendMessage(chatId, '❌ Invalid password. Try again:');
@@ -2395,16 +2490,25 @@ bot.on('message', async (msg) => {
       }
       
       // Update user login details - DON'T update chatId if it's already set (security)
-      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
-      if (userIndex !== -1) {
-        // Only update chatId if it's not already set (for backward compatibility)
-        if (!users[userIndex].chatId) {
-          users[userIndex].chatId = chatId.toString();
-          users[userIndex].accountBound = true;
-          users[userIndex].telegramAccountId = chatId.toString();
-        }
-        users[userIndex].lastLogin = new Date().toISOString();
-        await saveData(USERS_FILE, users);
+      if (user.chatId !== chatId.toString()) {
+        // Update chatId if it's not already set (for backward compatibility)
+        await saveData(COLLECTIONS.USERS,
+          { memberId: session.data.memberId },
+          { 
+            $set: { 
+              chatId: chatId.toString(),
+              accountBound: true,
+              telegramAccountId: chatId.toString(),
+              lastLogin: new Date().toISOString()
+            }
+          }
+        );
+      } else {
+        // Just update last login
+        await saveData(COLLECTIONS.USERS,
+          { memberId: session.data.memberId },
+          { $set: { lastLogin: new Date().toISOString() } }
+        );
       }
       
       // Clear from logged out users
@@ -2448,11 +2552,11 @@ bot.on('message', async (msg) => {
     else if (session.step === 'awaiting_investment_amount') {
       const amount = parseFloat(text);
       
-      if (isNaN(amount) || amount < 10 || amount > 800000) { // Changed from 10000 to 800000
+      if (isNaN(amount) || amount < 10 || amount > 800000) {
         await bot.sendMessage(chatId,
           `❌ Invalid amount.\n` +
           `Minimum: $10\n` +
-          `Maximum: $800,000\n\n` + // Updated message
+          `Maximum: $800,000\n\n` +
           `Please enter a valid amount:`
         );
         return;
@@ -2576,10 +2680,10 @@ bot.on('message', async (msg) => {
     else if (session.step === 'awaiting_withdrawal_amount') {
       const amount = parseFloat(text);
       
-      if (isNaN(amount) || amount < 2 || amount > session.data.balance) { // Changed from 10 to 2
+      if (isNaN(amount) || amount < 2 || amount > session.data.balance) {
         await bot.sendMessage(chatId,
           `❌ Invalid amount.\n` +
-          `Minimum: $2\n` + // Updated message
+          `Minimum: $2\n` +
           `Maximum: ${formatCurrency(session.data.balance)}\n\n` +
           `Please enter a valid amount:`
         );
@@ -2649,21 +2753,12 @@ bot.on('message', async (msg) => {
       }
       
       // Update user balance
-      const users = await loadData(USERS_FILE);
-      const userIndex = users.findIndex(u => u.memberId === session.data.memberId);
-      
-      if (userIndex === -1) {
-        await bot.sendMessage(chatId, '❌ User not found.');
-        delete userSessions[chatId];
-        return;
-      }
-      
-      // Deduct from balance
-      users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - session.data.withdrawalAmount;
-      await saveData(USERS_FILE, users);
+      await saveData(COLLECTIONS.USERS,
+        { memberId: session.data.memberId },
+        { $inc: { balance: -session.data.withdrawalAmount } }
+      );
       
       // Create withdrawal request
-      const withdrawals = await loadData(WITHDRAWALS_FILE);
       const withdrawalId = `WDL-${Date.now()}`;
       
       const withdrawal = {
@@ -2675,23 +2770,22 @@ bot.on('message', async (msg) => {
         method: session.data.method,
         details: details,
         status: 'pending',
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString()
       };
       
-      withdrawals.push(withdrawal);
-      await saveData(WITHDRAWALS_FILE, withdrawals);
+      await insertData(COLLECTIONS.WITHDRAWALS, withdrawal);
       
       // Record transaction
-      const transactions = await loadData(TRANSACTIONS_FILE);
-      transactions.push({
+      await insertData(COLLECTIONS.TRANSACTIONS, {
         id: `TRX-WDL-${Date.now()}`,
         memberId: session.data.memberId,
         type: 'withdrawal',
         amount: -session.data.withdrawalAmount,
         description: `Withdrawal #${withdrawalId} (${session.data.method})`,
-        date: new Date().toISOString()
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString()
       });
-      await saveData(TRANSACTIONS_FILE, transactions);
       
       delete userSessions[chatId];
       
@@ -2710,8 +2804,7 @@ bot.on('message', async (msg) => {
       // Notify admins
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
-        const users = await loadData(USERS_FILE);
-        const user = users.find(u => u.memberId === session.data.memberId);
+        const user = await getUserByMemberId(session.data.memberId);
         
         const adminMessage = `💳 **New Withdrawal Request**\n\n` +
                             `ID: ${withdrawalId}\n` +
@@ -2770,8 +2863,6 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'universal_support_message') {
       // Create support chat for user without account
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      
       const chatIdStr = `CHAT-NOACC-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
       
       const newChat = {
@@ -2792,8 +2883,7 @@ bot.on('message', async (msg) => {
         noAccount: true
       };
       
-      supportChats.push(newChat);
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      await insertData(COLLECTIONS.SUPPORT_CHATS, newChat);
       
       session.step = 'universal_support_chat';
       session.data.chatId = chatIdStr;
@@ -2834,24 +2924,30 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'universal_support_chat') {
       // Handle text messages from users without accounts
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+      const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
       
-      if (chatIndex === -1) {
+      if (!supportChat) {
         await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
         delete userSessions[chatId];
         return;
       }
       
-      supportChats[chatIndex].messages.push({
-        sender: 'user',
-        message: text,
-        timestamp: new Date().toISOString()
-      });
-      supportChats[chatIndex].updatedAt = new Date().toISOString();
-      supportChats[chatIndex].adminReplied = false;
-      
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      await saveData(COLLECTIONS.SUPPORT_CHATS,
+        { id: session.data.chatId },
+        { 
+          $push: { 
+            messages: {
+              sender: 'user',
+              message: text,
+              timestamp: new Date().toISOString()
+            }
+          },
+          $set: {
+            updatedAt: new Date().toISOString(),
+            adminReplied: false
+          }
+        }
+      );
       
       await bot.sendMessage(chatId,
         `✅ **Message sent**\n\n` +
@@ -2862,10 +2958,9 @@ bot.on('message', async (msg) => {
       // Notify admins
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
-        const chat = supportChats[chatIndex];
         const adminMessage = `💬 **No Account User Message**\n\n` +
                             `Chat ID: ${session.data.chatId}\n` +
-                            `User: ${chat.userName}\n` +
+                            `User: ${supportChat.userName}\n` +
                             `Message: ${text}\n\n` +
                             `**Reply:** /replychat ${session.data.chatId} your_message`;
         
@@ -2881,8 +2976,6 @@ bot.on('message', async (msg) => {
     
     // Handle appeal message
     else if (session.step === 'appeal_message') {
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      
       const chatIdStr = `APPEAL-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
       
       const newChat = {
@@ -2902,8 +2995,7 @@ bot.on('message', async (msg) => {
         isAppeal: true
       };
       
-      supportChats.push(newChat);
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      await insertData(COLLECTIONS.SUPPORT_CHATS, newChat);
       
       session.step = 'appeal_chat';
       session.data.chatId = chatIdStr;
@@ -2937,24 +3029,30 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'appeal_chat') {
       // Handle appeal chat messages
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+      const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
       
-      if (chatIndex === -1) {
+      if (!supportChat) {
         await bot.sendMessage(chatId, '❌ Appeal chat not found. Please start new appeal with /appeal');
         delete userSessions[chatId];
         return;
       }
       
-      supportChats[chatIndex].messages.push({
-        sender: 'user',
-        message: text,
-        timestamp: new Date().toISOString()
-      });
-      supportChats[chatIndex].updatedAt = new Date().toISOString();
-      supportChats[chatIndex].adminReplied = false;
-      
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      await saveData(COLLECTIONS.SUPPORT_CHATS,
+        { id: session.data.chatId },
+        { 
+          $push: { 
+            messages: {
+              sender: 'user',
+              message: text,
+              timestamp: new Date().toISOString()
+            }
+          },
+          $set: {
+            updatedAt: new Date().toISOString(),
+            adminReplied: false
+          }
+        }
+      );
       
       await bot.sendMessage(chatId,
         `✅ **Appeal message sent**\n\n` +
@@ -2965,10 +3063,9 @@ bot.on('message', async (msg) => {
       // Notify admins
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
-        const chat = supportChats[chatIndex];
         const adminMessage = `💬 **New Appeal Message**\n\n` +
                             `Chat ID: ${session.data.chatId}\n` +
-                            `User: ${chat.userName} (${chat.userId})\n` +
+                            `User: ${supportChat.userName} (${supportChat.userId})\n` +
                             `Type: Account Suspension Appeal\n` +
                             `Message: ${text}\n\n` +
                             `**Reply:** /replychat ${session.data.chatId} your_message`;
@@ -2988,8 +3085,7 @@ bot.on('message', async (msg) => {
       const topicNumber = parseInt(text);
       
       // Check if user is banned to show different topics
-      const users = await loadData(USERS_FILE);
-      const user = users.find(u => u.memberId === session.data.memberId);
+      const user = await getUserByMemberId(session.data.memberId);
       const isBanned = user ? user.banned : false;
       
       if (isBanned) {
@@ -3051,26 +3147,29 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'support_message') {
       // Create or find support chat
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      
-      // Find existing active chat for this user
-      const chatIndex = supportChats.findIndex(chat => 
-        chat.userId === session.data.memberId && 
-        chat.status === 'active'
-      );
+      const activeChat = await getActiveSupportChat(session.data.memberId);
       
       let chatIdStr;
       
-      if (chatIndex !== -1) {
+      if (activeChat) {
         // Continue existing chat
-        chatIdStr = supportChats[chatIndex].id;
-        supportChats[chatIndex].messages.push({
-          sender: 'user',
-          message: text,
-          timestamp: new Date().toISOString()
-        });
-        supportChats[chatIndex].updatedAt = new Date().toISOString();
-        supportChats[chatIndex].adminReplied = false;
+        chatIdStr = activeChat.id;
+        await saveData(COLLECTIONS.SUPPORT_CHATS,
+          { id: chatIdStr },
+          { 
+            $push: { 
+              messages: {
+                sender: 'user',
+                message: text,
+                timestamp: new Date().toISOString()
+              }
+            },
+            $set: {
+              updatedAt: new Date().toISOString(),
+              adminReplied: false
+            }
+          }
+        );
       } else {
         // Create new support chat
         chatIdStr = `CHAT-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
@@ -3091,10 +3190,8 @@ bot.on('message', async (msg) => {
           adminReplied: false
         };
         
-        supportChats.push(newChat);
+        await insertData(COLLECTIONS.SUPPORT_CHATS, newChat);
       }
-      
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
       
       session.step = 'support_chat';
       session.data.chatId = chatIdStr;
@@ -3134,30 +3231,36 @@ bot.on('message', async (msg) => {
     }
     else if (session.step === 'support_chat') {
       // Handle text messages in active support chats
-      const supportChats = await loadData(SUPPORT_CHATS_FILE);
-      const chatIndex = supportChats.findIndex(chat => chat.id === session.data.chatId);
+      const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: session.data.chatId });
       
-      if (chatIndex === -1) {
+      if (!supportChat) {
         await bot.sendMessage(chatId, '❌ Chat not found. Please start new support with /support');
         delete userSessions[chatId];
         return;
       }
       
-      if (supportChats[chatIndex].status === 'closed') {
+      if (supportChat.status === 'closed') {
         await bot.sendMessage(chatId, '❌ This support chat has been closed by admin.');
         delete userSessions[chatId];
         return;
       }
       
-      supportChats[chatIndex].messages.push({
-        sender: 'user',
-        message: text,
-        timestamp: new Date().toISOString()
-      });
-      supportChats[chatIndex].updatedAt = new Date().toISOString();
-      supportChats[chatIndex].adminReplied = false;
-      
-      await saveData(SUPPORT_CHATS_FILE, supportChats);
+      await saveData(COLLECTIONS.SUPPORT_CHATS,
+        { id: session.data.chatId },
+        { 
+          $push: { 
+            messages: {
+              sender: 'user',
+              message: text,
+              timestamp: new Date().toISOString()
+            }
+          },
+          $set: {
+            updatedAt: new Date().toISOString(),
+            adminReplied: false
+          }
+        }
+      );
       
       await bot.sendMessage(chatId,
         `✅ **Message sent**\n\n` +
@@ -3168,10 +3271,9 @@ bot.on('message', async (msg) => {
       // Notify admins
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
-        const chat = supportChats[chatIndex];
         const adminMessage = `💬 **New Support Message**\n\n` +
                             `Chat ID: ${session.data.chatId}\n` +
-                            `User: ${chat.userName} (${chat.userId})\n` +
+                            `User: ${supportChat.userName} (${supportChat.userId})\n` +
                             `Message: ${text}\n\n` +
                             `**Reply:** /replychat ${session.data.chatId} your_message`;
         
@@ -3298,17 +3400,15 @@ bot.onText(/\/viewmedia (.+)/, async (msg, match) => {
   }
   
   try {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chat = supportChats.find(c => c.id === supportChatId);
+    const supportChat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: supportChatId });
     
-    if (!chat) {
+    if (!supportChat) {
       await bot.sendMessage(chatId, `❌ Support chat ${supportChatId} not found.`);
       return;
     }
     
     // Find media files in this chat
-    const mediaFiles = await loadData(MEDIA_FILES_FILE);
-    const chatMedia = mediaFiles.filter(media => media.chatId === supportChatId);
+    const chatMedia = await loadData(COLLECTIONS.MEDIA_FILES, { chatId: supportChatId });
     
     if (chatMedia.length === 0) {
       await bot.sendMessage(chatId, `📭 No media files in chat ${supportChatId}.`);
@@ -3398,8 +3498,7 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
   }
   
   try {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chat = supportChats.find(c => c.id === supportChatId);
+    const chat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: supportChatId });
     
     if (!chat) {
       await bot.sendMessage(chatId, `❌ Support chat ${supportChatId} not found.`);
@@ -3413,8 +3512,7 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
     const userId = chat.userId || 'Unknown ID';
     
     // Count media in chat
-    const mediaFiles = await loadData(MEDIA_FILES_FILE);
-    const chatMedia = mediaFiles.filter(media => media.chatId === supportChatId);
+    const chatMedia = await loadData(COLLECTIONS.MEDIA_FILES, { chatId: supportChatId });
     const mediaCount = chatMedia.length;
     
     let message = `💬 **Support Chat Details**\n\n`;
@@ -3493,19 +3591,19 @@ bot.onText(/\/stats/, async (msg) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const investments = await loadData(INVESTMENTS_FILE);
-    const withdrawals = await loadData(WITHDRAWALS_FILE);
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const referrals = await loadData(REFERRALS_FILE);
-    const mediaFiles = await loadData(MEDIA_FILES_FILE);
-    const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
-    const transactions = await loadData(TRANSACTIONS_FILE);
+    const users = await loadData(COLLECTIONS.USERS);
+    const investments = await loadData(COLLECTIONS.INVESTMENTS);
+    const withdrawals = await loadData(COLLECTIONS.WITHDRAWALS);
+    const supportChats = await loadData(COLLECTIONS.SUPPORT_CHATS);
+    const referrals = await loadData(COLLECTIONS.REFERRALS);
+    const mediaFiles = await loadData(COLLECTIONS.MEDIA_FILES);
+    const earningsViews = await loadData(COLLECTIONS.EARNINGS_VIEWS);
+    const transactions = await loadData(COLLECTIONS.TRANSACTIONS);
     
     const totalBalance = users.reduce((sum, user) => sum + parseFloat(user.balance || 0), 0);
     const totalInvested = users.reduce((sum, user) => sum + parseFloat(user.totalInvested || 0), 0);
     const totalEarned = users.reduce((sum, user) => sum + parseFloat(user.totalEarned || 0), 0);
-    const totalReferralEarnings = referrals.reduce((sum, ref) => sum + ref.bonusAmount, 0);
+    const totalReferralEarnings = referrals.reduce((sum, ref) => sum + (ref.bonusAmount || 0), 0);
     const activeUsers = users.filter(u => !u.banned).length;
     const activeInvestments = investments.filter(i => i.status === 'active').length;
     const pendingInvestments = investments.filter(i => i.status === 'pending').length;
@@ -3582,19 +3680,16 @@ bot.onText(/\/users/, async (msg) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
+    const users = await loadData(COLLECTIONS.USERS, {}, { joinedDate: -1 }, 10);
     
     if (users.length === 0) {
       await bot.sendMessage(chatId, '📭 No users found.');
       return;
     }
     
-    let message = `👥 **Total Users: ${users.length}**\n\n`;
+    let message = `👥 **Recent Users (Last 10)**\n\n`;
     
-    // Show last 10 users
-    const recentUsers = users.slice(-10).reverse();
-    
-    recentUsers.forEach((user, index) => {
+    users.forEach((user, index) => {
       const status = user.banned ? '🚫' : user.botBlocked ? '❌' : '✅';
       const bound = user.accountBound ? '🔒' : '🔓';
       const balance = formatCurrency(user.balance || 0);
@@ -3602,6 +3697,8 @@ bot.onText(/\/users/, async (msg) => {
       message += `   Balance: ${balance} | Ref: ${user.referrals || 0}\n\n`;
     });
     
+    const totalUsers = await db.collection(COLLECTIONS.USERS).countDocuments();
+    message += `**Total Users:** ${totalUsers}\n\n`;
     message += `**View user:** /view USER_ID\n`;
     message += `**Example:** /view USER-1000`;
     
@@ -3630,18 +3727,12 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
       return;
     }
     
-    const investments = await loadData(INVESTMENTS_FILE);
-    const withdrawals = await loadData(WITHDRAWALS_FILE);
-    const referrals = await loadData(REFERRALS_FILE);
-    const earningsViews = await loadData(EARNINGS_VIEWS_FILE);
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    
-    const userInvestments = investments.filter(i => i.memberId === memberId);
-    const userWithdrawals = withdrawals.filter(w => w.memberId === memberId);
-    const userReferrals = referrals.filter(r => r.referrerId === memberId);
-    const userEarningsViews = earningsViews.filter(v => v.viewerId === memberId);
-    const viewedUserEarnings = earningsViews.filter(v => v.viewedId === memberId);
-    const userTransactions = transactions.filter(t => t.memberId === memberId);
+    const investments = await loadData(COLLECTIONS.INVESTMENTS, { memberId: memberId });
+    const withdrawals = await loadData(COLLECTIONS.WITHDRAWALS, { memberId: memberId });
+    const referrals = await loadData(COLLECTIONS.REFERRALS, { referrerId: memberId });
+    const earningsViews = await loadData(COLLECTIONS.EARNINGS_VIEWS, { viewerId: memberId });
+    const viewedUserEarnings = await loadData(COLLECTIONS.EARNINGS_VIEWS, { viewedId: memberId });
+    const transactions = await loadData(COLLECTIONS.TRANSACTIONS, { memberId: memberId });
     const referredBy = user.referredBy ? `Referred by: ${user.referredBy}\n` : '';
     
     const message = `👤 **User Details**\n\n` +
@@ -3664,12 +3755,12 @@ bot.onText(/\/view (.+)/, async (msg, match) => {
                    `📊 **Stats**\n` +
                    `Referrals: ${user.referrals || 0}\n` +
                    `Referral Code: ${user.referralCode || 'N/A'}\n` +
-                   `Investments: ${userInvestments.length}\n` +
-                   `Withdrawals: ${userWithdrawals.length}\n` +
-                   `Referral Network: ${userReferrals.length}\n` +
-                   `Earnings Views Made: ${userEarningsViews.length}\n` +
+                   `Investments: ${investments.length}\n` +
+                   `Withdrawals: ${withdrawals.length}\n` +
+                   `Referral Network: ${referrals.length}\n` +
+                   `Earnings Views Made: ${earningsViews.length}\n` +
                    `Earnings Views Received: ${viewedUserEarnings.length}\n` +
-                   `Transactions: ${userTransactions.length}\n\n` +
+                   `Transactions: ${transactions.length}\n\n` +
                    `**Actions:**\n` +
                    `💰 Add Balance: /addbalance ${memberId} AMOUNT\n` +
                    `🔐 Reset Pass: /resetpass ${memberId}\n` +
@@ -3701,42 +3792,42 @@ bot.onText(/\/addbalance (.+?) (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
-    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + amount;
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { $inc: { balance: amount } }
+    );
     
     // Record transaction
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    transactions.push({
+    await insertData(COLLECTIONS.TRANSACTIONS, {
       id: `ADMIN-ADD-${Date.now()}`,
       memberId: memberId,
       type: 'admin_add_balance',
       amount: amount,
       description: `Admin added balance`,
       date: new Date().toISOString(),
-      adminId: chatId.toString()
+      adminId: chatId.toString(),
+      createdAt: new Date().toISOString()
     });
-    await saveData(TRANSACTIONS_FILE, transactions);
     
     await bot.sendMessage(chatId,
       `✅ **Balance Added Successfully**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Amount Added: ${formatCurrency(amount)}\n` +
-      `New Balance: ${formatCurrency(users[userIndex].balance)}`
+      `New Balance: ${formatCurrency((user.balance || 0) + amount)}`
     );
     
     // Notify user
     await sendUserNotification(memberId,
       `💰 **Admin Added Balance**\n\n` +
       `Amount: ${formatCurrency(amount)}\n` +
-      `New Balance: ${formatCurrency(users[userIndex].balance)}\n\n` +
+      `New Balance: ${formatCurrency((user.balance || 0) + amount)}\n\n` +
       `This was added by an administrator.`
     );
   } catch (error) {
@@ -3756,23 +3847,28 @@ bot.onText(/\/resetpass (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
     const newPassword = generateRandomPassword(8);
-    users[userIndex].passwordHash = hashPassword(newPassword);
-    users[userIndex].lastPasswordChange = new Date().toISOString();
     
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { 
+        $set: { 
+          passwordHash: hashPassword(newPassword),
+          lastPasswordChange: new Date().toISOString()
+        }
+      }
+    );
     
     await bot.sendMessage(chatId,
       `✅ **Password Reset Successful**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `New Password: ${newPassword}\n\n` +
       `User has been notified of the new password.`
     );
@@ -3804,25 +3900,26 @@ bot.onText(/\/suspend (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
-    if (users[userIndex].banned) {
+    if (user.banned) {
       await bot.sendMessage(chatId, `⚠️ User ${memberId} is already suspended.`);
       return;
     }
     
-    users[userIndex].banned = true;
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { $set: { banned: true } }
+    );
     
     await bot.sendMessage(chatId,
       `🚫 **User Suspended**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Status: Suspended\n\n` +
       `User can no longer access their account.`
     );
@@ -3851,25 +3948,26 @@ bot.onText(/\/unsuspend (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
-    if (!users[userIndex].banned) {
+    if (!user.banned) {
       await bot.sendMessage(chatId, `⚠️ User ${memberId} is not suspended.`);
       return;
     }
     
-    users[userIndex].banned = false;
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { $set: { banned: false } }
+    );
     
     await bot.sendMessage(chatId,
       `✅ **User Unsuspended**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Status: Active\n\n` +
       `User can now access their account again.`
     );
@@ -3898,32 +3996,24 @@ bot.onText(/\/delete (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
-    const userName = users[userIndex].name;
+    const userName = user.name;
     
-    // Remove user
-    users.splice(userIndex, 1);
-    await saveData(USERS_FILE, users);
-    
-    // Clean up related data
-    const investments = await loadData(INVESTMENTS_FILE);
-    const updatedInvestments = investments.filter(i => i.memberId !== memberId);
-    await saveData(INVESTMENTS_FILE, updatedInvestments);
-    
-    const withdrawals = await loadData(WITHDRAWALS_FILE);
-    const updatedWithdrawals = withdrawals.filter(w => w.memberId !== memberId);
-    await saveData(WITHDRAWALS_FILE, updatedWithdrawals);
-    
-    const referrals = await loadData(REFERRALS_FILE);
-    const updatedReferrals = referrals.filter(r => r.referrerId !== memberId && r.referredId !== memberId);
-    await saveData(REFERRALS_FILE, updatedReferrals);
+    // Remove user and related data
+    await deleteData(COLLECTIONS.USERS, { memberId: memberId });
+    await deleteData(COLLECTIONS.INVESTMENTS, { memberId: memberId });
+    await deleteData(COLLECTIONS.WITHDRAWALS, { memberId: memberId });
+    await deleteData(COLLECTIONS.REFERRALS, { referrerId: memberId });
+    await deleteData(COLLECTIONS.REFERRALS, { referredId: memberId });
+    await deleteData(COLLECTIONS.TRANSACTIONS, { memberId: memberId });
+    await deleteData(COLLECTIONS.EARNINGS_VIEWS, { viewerId: memberId });
+    await deleteData(COLLECTIONS.EARNINGS_VIEWS, { viewedId: memberId });
     
     await bot.sendMessage(chatId,
       `🗑️ **User Deleted**\n\n` +
@@ -3946,8 +4036,7 @@ bot.onText(/\/supportchats/, async (msg) => {
   }
   
   try {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const activeChats = supportChats.filter(c => c.status === 'active');
+    const activeChats = await loadData(COLLECTIONS.SUPPORT_CHATS, { status: 'active' });
     
     if (activeChats.length === 0) {
       await bot.sendMessage(chatId, '📭 No active support chats.');
@@ -3993,29 +4082,34 @@ bot.onText(/\/replychat (.+?) (.+)/, async (msg, match) => {
   }
   
   try {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chatIndex = supportChats.findIndex(c => c.id === supportChatId);
+    const chat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: supportChatId });
     
-    if (chatIndex === -1) {
+    if (!chat) {
       await bot.sendMessage(chatId, `❌ Support chat ${supportChatId} not found.`);
       return;
     }
     
-    const chat = supportChats[chatIndex];
     const userId = chat.userId;
     const userName = chat.userName;
     
     // Add admin reply to chat
-    supportChats[chatIndex].messages.push({
-      sender: 'admin',
-      message: replyMessage,
-      timestamp: new Date().toISOString(),
-      adminId: chatId.toString()
-    });
-    supportChats[chatIndex].updatedAt = new Date().toISOString();
-    supportChats[chatIndex].adminReplied = true;
-    
-    await saveData(SUPPORT_CHATS_FILE, supportChats);
+    await saveData(COLLECTIONS.SUPPORT_CHATS,
+      { id: supportChatId },
+      { 
+        $push: { 
+          messages: {
+            sender: 'admin',
+            message: replyMessage,
+            timestamp: new Date().toISOString(),
+            adminId: chatId.toString()
+          }
+        },
+        $set: {
+          updatedAt: new Date().toISOString(),
+          adminReplied: true
+        }
+      }
+    );
     
     // Send notification to user based on chat type
     if (chat.noAccount) {
@@ -4072,35 +4166,38 @@ bot.onText(/\/closechat (.+)/, async (msg, match) => {
   }
   
   try {
-    const supportChats = await loadData(SUPPORT_CHATS_FILE);
-    const chatIndex = supportChats.findIndex(c => c.id === supportChatId);
+    const chat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: supportChatId });
     
-    if (chatIndex === -1) {
+    if (!chat) {
       await bot.sendMessage(chatId, `❌ Support chat ${supportChatId} not found.`);
       return;
     }
     
-    if (supportChats[chatIndex].status === 'closed') {
+    if (chat.status === 'closed') {
       await bot.sendMessage(chatId, `⚠️ Chat ${supportChatId} is already closed.`);
       return;
     }
     
-    supportChats[chatIndex].status = 'closed';
-    supportChats[chatIndex].updatedAt = new Date().toISOString();
-    supportChats[chatIndex].closedBy = 'admin';
-    
-    await saveData(SUPPORT_CHATS_FILE, supportChats);
+    await saveData(COLLECTIONS.SUPPORT_CHATS,
+      { id: supportChatId },
+      { 
+        $set: { 
+          status: 'closed',
+          updatedAt: new Date().toISOString(),
+          closedBy: 'admin'
+        }
+      }
+    );
     
     await bot.sendMessage(chatId,
       `✅ **Chat Closed**\n\n` +
       `Chat ID: ${supportChatId}\n` +
-      `User: ${supportChats[chatIndex].userName}\n` +
+      `User: ${chat.userName}\n` +
       `Closed by: Admin\n\n` +
       `User has been notified.`
     );
     
     // Notify user
-    const chat = supportChats[chatIndex];
     if (chat.noAccount) {
       const userChatId = chat.userChatId || chat.userId.replace('NO_ACCOUNT_', '');
       try {
@@ -4214,7 +4311,7 @@ bot.onText(/\/investments/, async (msg) => {
   }
   
   try {
-    const investments = await loadData(INVESTMENTS_FILE);
+    const investments = await loadData(COLLECTIONS.INVESTMENTS, {}, { date: -1 });
     
     if (investments.length === 0) {
       await bot.sendMessage(chatId, '📭 No investments found.');
@@ -4232,7 +4329,7 @@ bot.onText(/\/investments/, async (msg) => {
     message += `Completed: ${completedInvestments.length}\n\n`;
     
     // Show recent investments
-    const recentInvestments = investments.slice(-5).reverse();
+    const recentInvestments = investments.slice(0, 5);
     
     message += `**Recent Investments:**\n`;
     recentInvestments.forEach((inv, index) => {
@@ -4262,15 +4359,12 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
   }
   
   try {
-    const investments = await loadData(INVESTMENTS_FILE);
-    const investmentIndex = investments.findIndex(i => i.id === investmentId);
+    const investment = await findOne(COLLECTIONS.INVESTMENTS, { id: investmentId });
     
-    if (investmentIndex === -1) {
+    if (!investment) {
       await bot.sendMessage(chatId, `❌ Investment ${investmentId} not found.`);
       return;
     }
-    
-    const investment = investments[investmentIndex];
     
     if (investment.status !== 'pending') {
       await bot.sendMessage(chatId, `⚠️ Investment ${investmentId} is not pending.`);
@@ -4278,114 +4372,135 @@ bot.onText(/\/approveinvestment (.+)/, async (msg, match) => {
     }
     
     // Check if this is the user's FIRST investment (BEFORE we update to active)
-    const userActiveInvestments = investments.filter(inv => 
-      inv.memberId === investment.memberId && 
-      inv.status === 'active'
-    );
+    const userActiveInvestments = await loadData(COLLECTIONS.INVESTMENTS, { 
+      memberId: investment.memberId,
+      status: 'active'
+    });
     
     // If user has NO active investments, this is their FIRST investment
     const isFirstInvestment = userActiveInvestments.length === 0;
     
     // Update investment status
-    investments[investmentIndex].status = 'active';
-    investments[investmentIndex].approvedAt = new Date().toISOString();
-    investments[investmentIndex].approvedBy = chatId.toString();
+    await saveData(COLLECTIONS.INVESTMENTS,
+      { id: investmentId },
+      { 
+        $set: { 
+          status: 'active',
+          approvedAt: new Date().toISOString(),
+          approvedBy: chatId.toString()
+        }
+      }
+    );
     
     // Update user's total invested and active investments count
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === investment.memberId);
-    
-    if (userIndex !== -1) {
-      users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + investment.amount;
-      users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
-      
-      // Handle referral bonus if this is the user's FIRST investment and they were referred
-      if (users[userIndex].referredBy && isFirstInvestment) {
-        const referrer = users.find(u => u.referralCode === users[userIndex].referredBy);
-        if (referrer) {
-          const referralBonus = calculateReferralBonus(investment.amount);
-          
-          // Update referrer's balance and referral earnings
-          const referrerIndex = users.findIndex(u => u.memberId === referrer.memberId);
-          users[referrerIndex].balance = (parseFloat(users[referrerIndex].balance) || 0) + referralBonus;
-          users[referrerIndex].referralEarnings = (parseFloat(users[referrerIndex].referralEarnings) || 0) + referralBonus;
-          
-          // Update referral record
-          const referrals = await loadData(REFERRALS_FILE);
-          const referralIndex = referrals.findIndex(r => 
-            r.referrerId === referrer.memberId && 
-            r.referredId === investment.memberId
-          );
-          
-          if (referralIndex !== -1) {
-            referrals[referralIndex].status = 'paid';
-            referrals[referralIndex].bonusAmount = referralBonus;
-            referrals[referralIndex].bonusPaid = true;
-            referrals[referralIndex].investmentAmount = investment.amount;
-            referrals[referralIndex].paidAt = new Date().toISOString();
-            referrals[referralIndex].isFirstInvestment = false; // Mark as not first anymore
-            
-            await saveData(REFERRALS_FILE, referrals);
-          }
-          
-          // Notify referrer about FIRST investment bonus
-          await sendUserNotification(referrer.memberId,
-            `🎉 **Referral Bonus Earned!**\n\n` +
-            `Your referral made their FIRST investment!\n\n` +
-            `Referral: ${users[userIndex].name}\n` +
-            `Investment Amount: ${formatCurrency(investment.amount)}\n` +
-            `Your Bonus (10%): ${formatCurrency(referralBonus)}\n\n` +
-            `Bonus has been added to your balance!\n` +
-            `New Balance: ${formatCurrency(users[referrerIndex].balance)}\n\n` +
-            `Note: You only earn 10% on their FIRST investment.\n` +
-            `Subsequent investments will not earn bonuses.`
-          );
-          
-          // Record transaction for referrer
-          const transactions = await loadData(TRANSACTIONS_FILE);
-          transactions.push({
-            id: `REF-BONUS-${Date.now()}`,
-            memberId: referrer.memberId,
-            type: 'referral_bonus',
-            amount: referralBonus,
-            description: `Bonus from ${users[userIndex].name}'s FIRST investment`,
-            date: new Date().toISOString()
-          });
-          await saveData(TRANSACTIONS_FILE, transactions);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: investment.memberId },
+      { 
+        $inc: { 
+          totalInvested: investment.amount,
+          activeInvestments: 1
         }
-      } else if (users[userIndex].referredBy && !isFirstInvestment) {
-        // This is a SUBSEQUENT investment - no bonus
-        const referrer = users.find(u => u.referralCode === users[userIndex].referredBy);
-        if (referrer) {
-          // Update referral record to mark as subsequent
-          const referrals = await loadData(REFERRALS_FILE);
-          const referralIndex = referrals.findIndex(r => 
-            r.referrerId === referrer.memberId && 
-            r.referredId === investment.memberId
+      }
+    );
+    
+    // Handle referral bonus if this is the user's FIRST investment and they were referred
+    const user = await getUserByMemberId(investment.memberId);
+    if (user.referredBy && isFirstInvestment) {
+      const referrer = await findOne(COLLECTIONS.USERS, { referralCode: user.referredBy });
+      if (referrer) {
+        const referralBonus = calculateReferralBonus(investment.amount);
+        
+        // Update referrer's balance and referral earnings
+        await saveData(COLLECTIONS.USERS,
+          { memberId: referrer.memberId },
+          { 
+            $inc: { 
+              balance: referralBonus,
+              referralEarnings: referralBonus
+            }
+          }
+        );
+        
+        // Update referral record
+        const referral = await findOne(COLLECTIONS.REFERRALS, { 
+          referrerId: referrer.memberId,
+          referredId: investment.memberId
+        });
+        
+        if (referral) {
+          await saveData(COLLECTIONS.REFERRALS,
+            { id: referral.id },
+            { 
+              $set: { 
+                status: 'paid',
+                bonusAmount: referralBonus,
+                bonusPaid: true,
+                investmentAmount: investment.amount,
+                paidAt: new Date().toISOString(),
+                isFirstInvestment: false
+              }
+            }
+          );
+        }
+        
+        // Notify referrer about FIRST investment bonus
+        await sendUserNotification(referrer.memberId,
+          `🎉 **Referral Bonus Earned!**\n\n` +
+          `Your referral made their FIRST investment!\n\n` +
+          `Referral: ${user.name}\n` +
+          `Investment Amount: ${formatCurrency(investment.amount)}\n` +
+          `Your Bonus (10%): ${formatCurrency(referralBonus)}\n\n` +
+          `Bonus has been added to your balance!\n` +
+          `New Balance: ${formatCurrency((referrer.balance || 0) + referralBonus)}\n\n` +
+          `Note: You only earn 10% on their FIRST investment.\n` +
+          `Subsequent investments will not earn bonuses.`
+        );
+        
+        // Record transaction for referrer
+        await insertData(COLLECTIONS.TRANSACTIONS, {
+          id: `REF-BONUS-${Date.now()}`,
+          memberId: referrer.memberId,
+          type: 'referral_bonus',
+          amount: referralBonus,
+          description: `Bonus from ${user.name}'s FIRST investment`,
+          date: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        });
+      }
+    } else if (user.referredBy && !isFirstInvestment) {
+      // This is a SUBSEQUENT investment - no bonus
+      const referrer = await findOne(COLLECTIONS.USERS, { referralCode: user.referredBy });
+      if (referrer) {
+        // Update referral record to mark as subsequent
+        const referral = await findOne(COLLECTIONS.REFERRALS, { 
+          referrerId: referrer.memberId,
+          referredId: investment.memberId
+        });
+        
+        if (referral && referral.isFirstInvestment) {
+          // Mark as not first investment anymore
+          await saveData(COLLECTIONS.REFERRALS,
+            { id: referral.id },
+            { 
+              $set: { 
+                isFirstInvestment: false,
+                status: 'completed',
+                note: 'No bonus - subsequent investment'
+              }
+            }
           );
           
-          if (referralIndex !== -1 && referrals[referralIndex].isFirstInvestment) {
-            // Mark as not first investment anymore
-            referrals[referralIndex].isFirstInvestment = false;
-            referrals[referralIndex].status = 'completed';
-            referrals[referralIndex].note = 'No bonus - subsequent investment';
-            await saveData(REFERRALS_FILE, referrals);
-            
-            // Notify referrer about SUBSEQUENT investment (no bonus)
-            await sendUserNotification(referrer.memberId,
-              `ℹ️ **Referral Update**\n\n` +
-              `${users[userIndex].name} made another investment.\n\n` +
-              `Investment Amount: ${formatCurrency(investment.amount)}\n` +
-              `No bonus earned - you only get 10% on FIRST investment.\n\n` +
-              `Thanks for referring them!`
-            );
-          }
+          // Notify referrer about SUBSEQUENT investment (no bonus)
+          await sendUserNotification(referrer.memberId,
+            `ℹ️ **Referral Update**\n\n` +
+            `${user.name} made another investment.\n\n` +
+            `Investment Amount: ${formatCurrency(investment.amount)}\n` +
+            `No bonus earned - you only get 10% on FIRST investment.\n\n` +
+            `Thanks for referring them!`
+          );
         }
       }
     }
-    
-    await saveData(INVESTMENTS_FILE, investments);
-    await saveData(USERS_FILE, users);
     
     await bot.sendMessage(chatId,
       `✅ **Investment Approved**\n\n` +
@@ -4428,15 +4543,12 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
   }
   
   try {
-    const investments = await loadData(INVESTMENTS_FILE);
-    const investmentIndex = investments.findIndex(i => i.id === investmentId);
+    const investment = await findOne(COLLECTIONS.INVESTMENTS, { id: investmentId });
     
-    if (investmentIndex === -1) {
+    if (!investment) {
       await bot.sendMessage(chatId, `❌ Investment ${investmentId} not found.`);
       return;
     }
-    
-    const investment = investments[investmentIndex];
     
     if (investment.status !== 'pending') {
       await bot.sendMessage(chatId, `⚠️ Investment ${investmentId} is not pending.`);
@@ -4444,11 +4556,16 @@ bot.onText(/\/rejectinvestment (.+)/, async (msg, match) => {
     }
     
     // Update investment status
-    investments[investmentIndex].status = 'rejected';
-    investments[investmentIndex].rejectedAt = new Date().toISOString();
-    investments[investmentIndex].rejectedBy = chatId.toString();
-    
-    await saveData(INVESTMENTS_FILE, investments);
+    await saveData(COLLECTIONS.INVESTMENTS,
+      { id: investmentId },
+      { 
+        $set: { 
+          status: 'rejected',
+          rejectedAt: new Date().toISOString(),
+          rejectedBy: chatId.toString()
+        }
+      }
+    );
     
     await bot.sendMessage(chatId,
       `❌ **Investment Rejected**\n\n` +
@@ -4485,16 +4602,15 @@ bot.onText(/\/viewproof (.+)/, async (msg, match) => {
   }
   
   try {
-    const investments = await loadData(INVESTMENTS_FILE);
-    const investment = investments.find(i => i.id === investmentId);
+    const investment = await findOne(COLLECTIONS.INVESTMENTS, { id: investmentId });
     
     if (!investment) {
       await bot.sendMessage(chatId, `❌ Investment ${investmentId} not found.`);
       return;
     }
     
-    const mediaFiles = await loadData(MEDIA_FILES_FILE);
-    const proof = mediaFiles.find(m => m.investmentId === investmentId);
+    const mediaFiles = await loadData(COLLECTIONS.MEDIA_FILES, { investmentId: investmentId });
+    const proof = mediaFiles[0];
     
     if (!proof) {
       await bot.sendMessage(chatId, `❌ No proof found for investment ${investmentId}.`);
@@ -4534,15 +4650,13 @@ bot.onText(/\/manualinv (.+?) (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
-    const investments = await loadData(INVESTMENTS_FILE);
     const investmentId = `INV-MANUAL-${Date.now()}`;
     
     // Create manual investment
@@ -4556,34 +4670,38 @@ bot.onText(/\/manualinv (.+?) (.+)/, async (msg, match) => {
       daysActive: 0,
       totalProfit: 0,
       isManual: true,
-      adminId: chatId.toString()
+      adminId: chatId.toString(),
+      createdAt: new Date().toISOString()
     };
     
-    investments.push(manualInvestment);
+    await insertData(COLLECTIONS.INVESTMENTS, manualInvestment);
     
     // Update user stats
-    users[userIndex].totalInvested = (parseFloat(users[userIndex].totalInvested) || 0) + amount;
-    users[userIndex].activeInvestments = (users[userIndex].activeInvestments || 0) + 1;
-    
-    await saveData(INVESTMENTS_FILE, investments);
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { 
+        $inc: { 
+          totalInvested: amount,
+          activeInvestments: 1
+        }
+      }
+    );
     
     // Record transaction
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    transactions.push({
+    await insertData(COLLECTIONS.TRANSACTIONS, {
       id: `TRX-MANUAL-INV-${Date.now()}`,
       memberId: memberId,
       type: 'manual_investment',
       amount: amount,
       description: `Manual investment added by admin`,
       date: new Date().toISOString(),
-      adminId: chatId.toString()
+      adminId: chatId.toString(),
+      createdAt: new Date().toISOString()
     });
-    await saveData(TRANSACTIONS_FILE, transactions);
     
     await bot.sendMessage(chatId,
       `✅ **Manual Investment Added**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Amount: ${formatCurrency(amount)}\n` +
       `Investment ID: ${investmentId}\n` +
       `Status: Active\n\n` +
@@ -4623,51 +4741,51 @@ bot.onText(/\/deductbalance (.+?) (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
-    if ((users[userIndex].balance || 0) < amount) {
+    if ((user.balance || 0) < amount) {
       await bot.sendMessage(chatId,
         `❌ Insufficient balance.\n` +
-        `User has: ${formatCurrency(users[userIndex].balance || 0)}\n` +
+        `User has: ${formatCurrency(user.balance || 0)}\n` +
         `Trying to deduct: ${formatCurrency(amount)}`
       );
       return;
     }
     
-    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) - amount;
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { $inc: { balance: -amount } }
+    );
     
     // Record transaction
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    transactions.push({
+    await insertData(COLLECTIONS.TRANSACTIONS, {
       id: `ADMIN-DEDUCT-${Date.now()}`,
       memberId: memberId,
       type: 'admin_deduct_balance',
       amount: -amount,
       description: `Admin deducted balance`,
       date: new Date().toISOString(),
-      adminId: chatId.toString()
+      adminId: chatId.toString(),
+      createdAt: new Date().toISOString()
     });
-    await saveData(TRANSACTIONS_FILE, transactions);
     
     await bot.sendMessage(chatId,
       `✅ **Balance Deducted Successfully**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Amount Deducted: ${formatCurrency(amount)}\n` +
-      `New Balance: ${formatCurrency(users[userIndex].balance)}`
+      `New Balance: ${formatCurrency((user.balance || 0) - amount)}`
     );
     
     // Notify user
     await sendUserNotification(memberId,
       `⚠️ **Balance Deducted by Admin**\n\n` +
       `Amount: ${formatCurrency(amount)}\n` +
-      `New Balance: ${formatCurrency(users[userIndex].balance)}\n\n` +
+      `New Balance: ${formatCurrency((user.balance || 0) - amount)}\n\n` +
       `This was deducted by an administrator.`
     );
   } catch (error) {
@@ -4693,17 +4811,19 @@ bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
     // Check if user has enough invested
-    const investments = await loadData(INVESTMENTS_FILE);
-    const userInvestments = investments.filter(inv => inv.memberId === memberId && inv.status === 'active');
+    const userInvestments = await loadData(COLLECTIONS.INVESTMENTS, { 
+      memberId: memberId,
+      status: 'active'
+    });
+    
     const totalInvested = userInvestments.reduce((sum, inv) => sum + inv.amount, 0);
     
     if (totalInvested < amount) {
@@ -4715,42 +4835,57 @@ bot.onText(/\/deductinv (.+?) (.+)/, async (msg, match) => {
       return;
     }
     
+    // Update user's total invested
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { 
+        $inc: { 
+          totalInvested: -amount
+        }
+      }
+    );
+    
     // Find and reduce investments (start with most recent)
     let remaining = amount;
     for (let investment of userInvestments.reverse()) {
       if (remaining <= 0) break;
       
-      const investmentIndex = investments.findIndex(inv => inv.id === investment.id);
-      if (investmentIndex !== -1) {
-        const deductAmount = Math.min(investments[investmentIndex].amount, remaining);
-        investments[investmentIndex].amount -= deductAmount;
-        remaining -= deductAmount;
-        
-        // If investment becomes 0 or negative, mark as completed
-        if (investments[investmentIndex].amount <= 0) {
-          investments[investmentIndex].status = 'completed';
-          investments[investmentIndex].completedAt = new Date().toISOString();
-        }
+      const deductAmount = Math.min(investment.amount, remaining);
+      const newAmount = investment.amount - deductAmount;
+      
+      if (newAmount > 0) {
+        await saveData(COLLECTIONS.INVESTMENTS,
+          { id: investment.id },
+          { $set: { amount: newAmount } }
+        );
+      } else {
+        await saveData(COLLECTIONS.INVESTMENTS,
+          { id: investment.id },
+          { 
+            $set: { 
+              amount: 0,
+              status: 'completed',
+              completedAt: new Date().toISOString()
+            }
+          }
+        );
       }
+      
+      remaining -= deductAmount;
     }
-    
-    // Update user's total invested
-    users[userIndex].totalInvested = Math.max(0, (users[userIndex].totalInvested || 0) - amount);
-    await saveData(USERS_FILE, users);
-    await saveData(INVESTMENTS_FILE, investments);
     
     await bot.sendMessage(chatId,
       `✅ **Investment Deducted Successfully**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Amount Deducted: ${formatCurrency(amount)}\n` +
-      `New Total Invested: ${formatCurrency(users[userIndex].totalInvested)}`
+      `New Total Invested: ${formatCurrency(Math.max(0, (user.totalInvested || 0) - amount))}`
     );
     
     // Notify user
     await sendUserNotification(memberId,
       `⚠️ **Investment Deducted by Admin**\n\n` +
       `Amount: ${formatCurrency(amount)}\n` +
-      `New Total Invested: ${formatCurrency(users[userIndex].totalInvested)}\n\n` +
+      `New Total Invested: ${formatCurrency(Math.max(0, (user.totalInvested || 0) - amount))}\n\n` +
       `This was deducted by an administrator.`
     );
   } catch (error) {
@@ -4769,7 +4904,7 @@ bot.onText(/\/referrals/, async (msg) => {
   }
   
   try {
-    const referrals = await loadData(REFERRALS_FILE);
+    const referrals = await loadData(COLLECTIONS.REFERRALS, {}, { date: -1 }, 10);
     
     if (referrals.length === 0) {
       await bot.sendMessage(chatId, '📭 No referrals found.');
@@ -4780,23 +4915,23 @@ bot.onText(/\/referrals/, async (msg) => {
     const pendingReferrals = referrals.filter(r => r.status === 'pending');
     const firstInvestmentReferrals = referrals.filter(r => r.isFirstInvestment === true);
     
-    let message = `👥 **Referrals Summary**\n\n`;
+    let message = `👥 **Referrals Summary (Recent 10)**\n\n`;
     message += `Total Referrals: ${referrals.length}\n`;
     message += `Paid (First Investment Bonus): ${paidReferrals.length}\n`;
     message += `Pending First Investment: ${pendingReferrals.length}\n`;
     message += `Awaiting First Investment: ${firstInvestmentReferrals.length}\n`;
     message += `Total Bonus Paid: ${formatCurrency(paidReferrals.reduce((sum, r) => sum + (r.bonusAmount || 0), 0))}\n\n`;
     
-    // Show recent referrals
-    const recentReferrals = referrals.slice(-10).reverse();
-    
     message += `**Recent Referrals:**\n`;
-    recentReferrals.forEach((ref, index) => {
+    referrals.forEach((ref, index) => {
       const status = ref.status === 'paid' ? '✅' : ref.status === 'pending' ? '⏳' : '❌';
       const firstInv = ref.isFirstInvestment ? 'FIRST' : 'SUBSEQUENT';
       message += `${index + 1}. ${status} ${ref.referrerName} → ${ref.referredName}\n`;
       message += `   Type: ${firstInv} | Bonus: ${formatCurrency(ref.bonusAmount || 0)} | ${new Date(ref.date).toLocaleDateString()}\n\n`;
     });
+    
+    const totalReferrals = await db.collection(COLLECTIONS.REFERRALS).countDocuments();
+    message += `**Total Referrals in Database:** ${totalReferrals}`;
     
     await bot.sendMessage(chatId, message);
   } catch (error) {
@@ -4816,18 +4951,16 @@ bot.onText(/\/findref (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const user = users.find(u => u.referralCode === referralCode);
+    const user = await findOne(COLLECTIONS.USERS, { referralCode: referralCode });
     
     if (!user) {
       await bot.sendMessage(chatId, `❌ No user found with referral code: ${referralCode}`);
       return;
     }
     
-    const referrals = await loadData(REFERRALS_FILE);
-    const userReferrals = referrals.filter(r => r.referrerId === user.memberId);
-    const successfulReferrals = userReferrals.filter(r => r.status === 'paid');
-    const firstInvestmentReferrals = userReferrals.filter(r => r.isFirstInvestment === true);
+    const referrals = await loadData(COLLECTIONS.REFERRALS, { referrerId: user.memberId });
+    const successfulReferrals = referrals.filter(r => r.status === 'paid');
+    const firstInvestmentReferrals = referrals.filter(r => r.isFirstInvestment === true);
     
     const message = `🔍 **User Found by Referral Code**\n\n` +
                    `Referral Code: ${referralCode}\n` +
@@ -4866,47 +4999,50 @@ bot.onText(/\/addrefbonus (.+?) (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === memberId);
+    const user = await getUserByMemberId(memberId);
     
-    if (userIndex === -1) {
+    if (!user) {
       await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
       return;
     }
     
     // Add to balance and referral earnings
-    users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + amount;
-    users[userIndex].referralEarnings = (parseFloat(users[userIndex].referralEarnings) || 0) + amount;
-    
-    await saveData(USERS_FILE, users);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: memberId },
+      { 
+        $inc: { 
+          balance: amount,
+          referralEarnings: amount
+        }
+      }
+    );
     
     // Record transaction
-    const transactions = await loadData(TRANSACTIONS_FILE);
-    transactions.push({
+    await insertData(COLLECTIONS.TRANSACTIONS, {
       id: `REF-BONUS-${Date.now()}`,
       memberId: memberId,
       type: 'referral_bonus',
       amount: amount,
       description: `Admin added referral bonus`,
       date: new Date().toISOString(),
-      adminId: chatId.toString()
+      adminId: chatId.toString(),
+      createdAt: new Date().toISOString()
     });
-    await saveData(TRANSACTIONS_FILE, transactions);
     
     await bot.sendMessage(chatId,
       `✅ **Referral Bonus Added**\n\n` +
-      `User: ${users[userIndex].name} (${memberId})\n` +
+      `User: ${user.name} (${memberId})\n` +
       `Bonus Amount: ${formatCurrency(amount)}\n` +
-      `New Balance: ${formatCurrency(users[userIndex].balance)}\n` +
-      `Total Referral Earnings: ${formatCurrency(users[userIndex].referralEarnings)}`
+      `New Balance: ${formatCurrency((user.balance || 0) + amount)}\n` +
+      `Total Referral Earnings: ${formatCurrency((user.referralEarnings || 0) + amount)}`
     );
     
     // Notify user
     await sendUserNotification(memberId,
       `🎉 **Referral Bonus Added!**\n\n` +
       `Amount: ${formatCurrency(amount)}\n` +
-      `New Balance: ${formatCurrency(users[userIndex].balance)}\n` +
-      `Total Referral Earnings: ${formatCurrency(users[userIndex].referralEarnings)}\n\n` +
+      `New Balance: ${formatCurrency((user.balance || 0) + amount)}\n` +
+      `Total Referral Earnings: ${formatCurrency((user.referralEarnings || 0) + amount)}\n\n` +
       `This bonus was added by an administrator.`
     );
   } catch (error) {
@@ -4927,7 +5063,7 @@ bot.onText(/\/withdrawals/, async (msg) => {
   }
   
   try {
-    const withdrawals = await loadData(WITHDRAWALS_FILE);
+    const withdrawals = await loadData(COLLECTIONS.WITHDRAWALS, {}, { date: -1 });
     
     if (withdrawals.length === 0) {
       await bot.sendMessage(chatId, '📭 No withdrawals found.');
@@ -4974,15 +5110,12 @@ bot.onText(/\/approve (.+)/, async (msg, match) => {
   }
   
   try {
-    const withdrawals = await loadData(WITHDRAWALS_FILE);
-    const withdrawalIndex = withdrawals.findIndex(w => w.id === withdrawalId);
+    const withdrawal = await findOne(COLLECTIONS.WITHDRAWALS, { id: withdrawalId });
     
-    if (withdrawalIndex === -1) {
+    if (!withdrawal) {
       await bot.sendMessage(chatId, `❌ Withdrawal ${withdrawalId} not found.`);
       return;
     }
-    
-    const withdrawal = withdrawals[withdrawalIndex];
     
     if (withdrawal.status === 'approved') {
       await bot.sendMessage(chatId, `⚠️ Withdrawal ${withdrawalId} is already approved.`);
@@ -4990,11 +5123,16 @@ bot.onText(/\/approve (.+)/, async (msg, match) => {
     }
     
     // Update withdrawal status
-    withdrawals[withdrawalIndex].status = 'approved';
-    withdrawals[withdrawalIndex].approvedAt = new Date().toISOString();
-    withdrawals[withdrawalIndex].approvedBy = chatId.toString();
-    
-    await saveData(WITHDRAWALS_FILE, withdrawals);
+    await saveData(COLLECTIONS.WITHDRAWALS,
+      { id: withdrawalId },
+      { 
+        $set: { 
+          status: 'approved',
+          approvedAt: new Date().toISOString(),
+          approvedBy: chatId.toString()
+        }
+      }
+    );
     
     await bot.sendMessage(chatId,
       `✅ **Withdrawal Approved**\n\n` +
@@ -5033,15 +5171,12 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
   }
   
   try {
-    const withdrawals = await loadData(WITHDRAWALS_FILE);
-    const withdrawalIndex = withdrawals.findIndex(w => w.id === withdrawalId);
+    const withdrawal = await findOne(COLLECTIONS.WITHDRAWALS, { id: withdrawalId });
     
-    if (withdrawalIndex === -1) {
+    if (!withdrawal) {
       await bot.sendMessage(chatId, `❌ Withdrawal ${withdrawalId} not found.`);
       return;
     }
-    
-    const withdrawal = withdrawals[withdrawalIndex];
     
     if (withdrawal.status === 'rejected') {
       await bot.sendMessage(chatId, `⚠️ Withdrawal ${withdrawalId} is already rejected.`);
@@ -5049,20 +5184,22 @@ bot.onText(/\/reject (.+)/, async (msg, match) => {
     }
     
     // Update withdrawal status
-    withdrawals[withdrawalIndex].status = 'rejected';
-    withdrawals[withdrawalIndex].rejectedAt = new Date().toISOString();
-    withdrawals[withdrawalIndex].rejectedBy = chatId.toString();
+    await saveData(COLLECTIONS.WITHDRAWALS,
+      { id: withdrawalId },
+      { 
+        $set: { 
+          status: 'rejected',
+          rejectedAt: new Date().toISOString(),
+          rejectedBy: chatId.toString()
+        }
+      }
+    );
     
     // Refund amount to user balance
-    const users = await loadData(USERS_FILE);
-    const userIndex = users.findIndex(u => u.memberId === withdrawal.memberId);
-    
-    if (userIndex !== -1) {
-      users[userIndex].balance = (parseFloat(users[userIndex].balance) || 0) + withdrawal.amount;
-      await saveData(USERS_FILE, users);
-    }
-    
-    await saveData(WITHDRAWALS_FILE, withdrawals);
+    await saveData(COLLECTIONS.USERS,
+      { memberId: withdrawal.memberId },
+      { $inc: { balance: withdrawal.amount } }
+    );
     
     await bot.sendMessage(chatId,
       `❌ **Withdrawal Rejected**\n\n` +
@@ -5101,8 +5238,8 @@ bot.onText(/\/broadcast (.+)/, async (msg, match) => {
   }
   
   try {
-    const users = await loadData(USERS_FILE);
-    const activeUsers = users.filter(u => !u.banned && u.chatId);
+    const users = await loadData(COLLECTIONS.USERS, { banned: false });
+    const activeUsers = users.filter(u => u.chatId);
     
     await bot.sendMessage(chatId,
       `📢 **Broadcast Starting**\n\n` +
@@ -5154,12 +5291,13 @@ app.get('/health', (req, res) => {
     memory: process.memoryUsage(),
     users: Object.keys(userSessions).length,
     loggedOutUsers: loggedOutUsers.size,
-    adminSessions: Object.keys(adminSessions).length
+    adminSessions: Object.keys(adminSessions).length,
+    mongoConnected: !!db
   });
 });
 
 app.get('/', (req, res) => {
-  res.send('Starlife Advert Bot is running!');
+  res.send('Starlife Advert Bot is running with MongoDB!');
 });
 
 // ==================== ERROR HANDLING ====================
@@ -5173,24 +5311,35 @@ bot.on('webhook_error', (error) => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('🛑 Shutting down gracefully...');
+  if (client) {
+    await client.close();
+    console.log('✅ MongoDB connection closed');
+  }
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
   });
 });
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('🛑 Shutting down gracefully...');
+  if (client) {
+    await client.close();
+    console.log('✅ MongoDB connection closed');
+  }
   server.close(() => {
     console.log('✅ Server closed');
     process.exit(0);
   });
 });
 
-console.log('✅ Starlife Advert Bot is running! Security fixes applied:');
-console.log('1. ✅ Telegram account binding implemented (One Telegram ↔ One Member ID)');
-console.log('2. ✅ Cannot login to other accounts with same Telegram');
-console.log('3. ✅ Account deletion issue fixed');
+console.log('✅ Starlife Advert Bot with MongoDB is running!');
+console.log('📊 All data is now stored in MongoDB Atlas (persistent storage)');
+console.log('🔒 Accounts will not be deleted on server restart');
+console.log('✅ Security fixes applied:');
+console.log('1. ✅ MongoDB integration for persistent storage');
+console.log('2. ✅ Telegram account binding implemented (One Telegram ↔ One Member ID)');
+console.log('3. ✅ Cannot login to other accounts with same Telegram');
 console.log('4. ✅ All features working perfectly!');
