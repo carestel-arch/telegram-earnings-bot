@@ -191,7 +191,7 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
     `);
     
-    // Create support_chats table
+        // Create support_chats table
     await client.query(`
       CREATE TABLE IF NOT EXISTS support_chats (
         id SERIAL PRIMARY KEY,
@@ -208,8 +208,7 @@ async function initDatabase() {
         no_account BOOLEAN DEFAULT FALSE,
         is_logged_out BOOLEAN DEFAULT FALSE,
         is_appeal BOOLEAN DEFAULT FALSE,
-        closed_by VARCHAR(50),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        closed_by VARCHAR(50)
       )
     `);
     
@@ -5852,3 +5851,4 @@ process.on('SIGINT', () => {
 console.log('✅ Starlife Advert Bot is running with PostgreSQL!');
 console.log('✅ Data is now permanently stored in PostgreSQL database');
 console.log('✅ No more data loss after 24 hours!');
+
