@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // MongoDB Configuration
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://starlifeadmin:YOUR_PASSWORD@cluster0.abc123.mongodb.net/starlife?appName=Cluster0';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://starlifeadmin:mDUbjRt7ev106AcW@cluster0.abc123.mongodb.net/starlife?appName=Cluster0';
 const DB_NAME = 'starlife';
 let db;
 let client;
@@ -5343,3 +5343,4 @@ console.log('1. ✅ MongoDB integration for persistent storage');
 console.log('2. ✅ Telegram account binding implemented (One Telegram ↔ One Member ID)');
 console.log('3. ✅ Cannot login to other accounts with same Telegram');
 console.log('4. ✅ All features working perfectly!');
+
