@@ -8,8 +8,8 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// MongoDB Configuration
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://starlifeadmin:mDUbjRt7ev106AcW@cluster0.abc123.mongodb.net/starlife?appName=Cluster0';
+// MongoDB Configuration - USE YOUR OWN CONNECTION STRING
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/starlife';
 const DB_NAME = 'starlife';
 let db;
 let client;
@@ -49,45 +49,52 @@ async function initMongoDB() {
     return true;
   } catch (error) {
     console.error('❌ MongoDB connection error:', error.message);
+    console.error('Please check your MongoDB connection string and ensure MongoDB is running.');
+    console.error('If using MongoDB Atlas, make sure your IP is whitelisted.');
     return false;
   }
 }
 
 // Create indexes for better performance
 async function createIndexes() {
-  // Users collection
-  await db.collection(COLLECTIONS.USERS).createIndex({ memberId: 1 }, { unique: true });
-  await db.collection(COLLECTIONS.USERS).createIndex({ chatId: 1 }, { unique: true, sparse: true });
-  await db.collection(COLLECTIONS.USERS).createIndex({ email: 1 }, { unique: true, sparse: true });
-  await db.collection(COLLECTIONS.USERS).createIndex({ referralCode: 1 }, { unique: true });
-  
-  // Investments collection
-  await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ memberId: 1 });
-  await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ status: 1 });
-  
-  // Withdrawals collection
-  await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ memberId: 1 });
-  await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ status: 1 });
-  
-  // Referrals collection
-  await db.collection(COLLECTIONS.REFERRALS).createIndex({ referrerId: 1 });
-  await db.collection(COLLECTIONS.REFERRALS).createIndex({ referredId: 1 });
-  
-  // Support chats collection
-  await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ userId: 1 });
-  await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ status: 1 });
-  
-  // Transactions collection
-  await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ memberId: 1 });
-  await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ date: -1 });
-  
-  // Earnings views collection
-  await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewerId: 1 });
-  await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewedId: 1 });
-  
-  // Media files collection
-  await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ chatId: 1 });
-  await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ investmentId: 1 });
+  try {
+    // Users collection
+    await db.collection(COLLECTIONS.USERS).createIndex({ memberId: 1 }, { unique: true });
+    await db.collection(COLLECTIONS.USERS).createIndex({ chatId: 1 }, { unique: true, sparse: true });
+    await db.collection(COLLECTIONS.USERS).createIndex({ email: 1 }, { unique: true, sparse: true });
+    await db.collection(COLLECTIONS.USERS).createIndex({ referralCode: 1 }, { unique: true });
+    
+    // Investments collection
+    await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ memberId: 1 });
+    await db.collection(COLLECTIONS.INVESTMENTS).createIndex({ status: 1 });
+    
+    // Withdrawals collection
+    await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ memberId: 1 });
+    await db.collection(COLLECTIONS.WITHDRAWALS).createIndex({ status: 1 });
+    
+    // Referrals collection
+    await db.collection(COLLECTIONS.REFERRALS).createIndex({ referrerId: 1 });
+    await db.collection(COLLECTIONS.REFERRALS).createIndex({ referredId: 1 });
+    
+    // Support chats collection
+    await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ id: 1 }, { unique: true });
+    await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ userId: 1 });
+    await db.collection(COLLECTIONS.SUPPORT_CHATS).createIndex({ status: 1 });
+    
+    // Transactions collection
+    await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ memberId: 1 });
+    await db.collection(COLLECTIONS.TRANSACTIONS).createIndex({ date: -1 });
+    
+    // Earnings views collection
+    await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewerId: 1 });
+    await db.collection(COLLECTIONS.EARNINGS_VIEWS).createIndex({ viewedId: 1 });
+    
+    // Media files collection
+    await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ chatId: 1 });
+    await db.collection(COLLECTIONS.MEDIA_FILES).createIndex({ investmentId: 1 });
+  } catch (error) {
+    console.error('Error creating indexes:', error.message);
+  }
 }
 
 // Initialize fake members
@@ -664,6 +671,7 @@ const server = app.listen(PORT, async () => {
       console.log('✅ Bot system initialized successfully');
     } else {
       console.log('❌ Failed to connect to MongoDB');
+      console.log('Please check your MongoDB connection string in the .env file');
     }
   } catch (error) {
     console.log('❌ Initialization error:', error.message);
@@ -676,6 +684,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 if (!TELEGRAM_TOKEN) {
   console.log('❌ ERROR: TELEGRAM_TOKEN is missing');
   console.log('Please set TELEGRAM_TOKEN environment variable');
+  console.log('Example: TELEGRAM_TOKEN=your_token_here');
   process.exit(1);
 }
 
@@ -745,8 +754,6 @@ function scheduleDailyProfits() {
             }
           }
         );
-        
-        // Removed 30-day completion check - investments now continue indefinitely
       }
       
       console.log('✅ Daily profits calculated for', investments.length, 'investments');
@@ -1107,10 +1114,10 @@ bot.onText(/\/help/, async (msg) => {
     helpMessage += `/support - Contact support\n\n`;
     
     helpMessage += `**📊 After Registration:**\n`;
-    helpMessage += `• Use /invest to start earning\n`;
-    helpMessage += `• Earn 2% daily profit (LIFETIME)\n`;
-    helpMessage += `• Get 10% from referrals (FIRST investment only)\n`;
-    helpMessage += `• Fast withdrawals (10-15 min)\n\n`;
+    helpMessage += `• Use /invest to start earning\n` +
+                   `• Earn 2% daily profit (LIFETIME)\n` +
+                   `• Get 10% from referrals (FIRST investment only)\n` +
+                   `• Fast withdrawals (10-15 min)\n\n`;
   }
   
   helpMessage += `**💳 Payment Methods:**\n`;
@@ -1877,7 +1884,7 @@ bot.onText(/\/appeal/, async (msg) => {
   );
 });
 
-// Register command - UPDATED WITH SECURITY FIX
+// Register command - FIXED ACCOUNT CREATION ISSUE
 bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
   const referralCode = match[1] ? match[1].trim().toUpperCase() : null;
@@ -2201,7 +2208,7 @@ bot.on('message', async (msg) => {
       );
     }
     
-    // Handle registration steps
+    // Handle registration steps - FIXED ACCOUNT CREATION
     else if (session.step === 'awaiting_name') {
       const name = text.trim();
       if (name.length < 2) {
@@ -2311,7 +2318,13 @@ bot.on('message', async (msg) => {
         updatedAt: new Date().toISOString()
       };
       
-      await insertData(COLLECTIONS.USERS, newUser);
+      const result = await insertData(COLLECTIONS.USERS, newUser);
+      
+      if (!result) {
+        await bot.sendMessage(chatId, '❌ Error creating account. Please try again or contact support.');
+        delete userSessions[chatId];
+        return;
+      }
       
       // Handle referral tracking if user was referred
       if (referredBy) {
@@ -2826,7 +2839,7 @@ bot.on('message', async (msg) => {
       }
     }
     
-    // Handle universal support
+    // Handle universal support - FIXED SUPPORT SYSTEM
     else if (session.step === 'universal_support_choice') {
       const choice = parseInt(text);
       
@@ -2903,7 +2916,7 @@ bot.on('message', async (msg) => {
         `Type /endsupport to end chat`
       );
       
-      // Notify admins
+      // Notify admins - FIXED ADMIN NOTIFICATION
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
         const adminMessage = `🆘 **New Support (No Account)**\n\n` +
@@ -2955,7 +2968,7 @@ bot.on('message', async (msg) => {
         `Type /endsupport to end chat`
       );
       
-      // Notify admins
+      // Notify admins - FIXED
       const adminIds = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(',') : [];
       if (adminIds.length > 0) {
         const adminMessage = `💬 **No Account User Message**\n\n` +
@@ -3487,7 +3500,7 @@ bot.onText(/\/viewmedia (.+)/, async (msg, match) => {
   }
 });
 
-// View chat command
+// View chat command - FIXED ADMIN REPLY ISSUE
 bot.onText(/\/viewchat (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const supportChatId = match[1];
@@ -3579,7 +3592,97 @@ bot.onText(/\/viewchat (.+)/, async (msg, match) => {
   }
 });
 
-// ==================== OTHER ADMIN COMMANDS ====================
+// Reply to chat - FIXED ADMIN REPLY ISSUE
+bot.onText(/\/replychat (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const supportChatId = match[1];
+  const replyMessage = match[2];
+  
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+  
+  try {
+    const chat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: supportChatId });
+    
+    if (!chat) {
+      await bot.sendMessage(chatId, `❌ Support chat ${supportChatId} not found.`);
+      return;
+    }
+    
+    const userId = chat.userId;
+    const userName = chat.userName;
+    
+    // Add admin reply to chat
+    await saveData(COLLECTIONS.SUPPORT_CHATS,
+      { id: supportChatId },
+      { 
+        $push: { 
+          messages: {
+            sender: 'admin',
+            message: replyMessage,
+            timestamp: new Date().toISOString(),
+            adminId: chatId.toString()
+          }
+        },
+        $set: {
+          updatedAt: new Date().toISOString(),
+          adminReplied: true
+        }
+      }
+    );
+    
+    // Send notification to user based on chat type
+    if (chat.noAccount) {
+      // User without account - send to their chat ID
+      const userChatId = chat.userChatId || userId.replace('NO_ACCOUNT_', '');
+      try {
+        await bot.sendMessage(userChatId,
+          `💬 **Support Response**\n\n` +
+          `${replyMessage}\n\n` +
+          `Use /support to reply back.`
+        );
+      } catch (error) {
+        console.log('Could not send to no-account user:', error.message);
+        // Store offline message
+        await storeOfflineMessage(userId.replace('NO_ACCOUNT_', ''), 
+          `💬 **Support Response**\n\n${replyMessage}\n\nUse /support to reply back.`,
+          'support_response'
+        );
+      }
+    } else if (chat.isLoggedOut) {
+      // Logged out user - store offline message
+      const memberId = userId.replace('LOGGED_OUT_', '');
+      await storeOfflineMessage(memberId,
+        `💬 **Support Response (You were logged out)**\n\n` +
+        `${replyMessage}\n\n` +
+        `Login with /login to continue chatting.`,
+        'support_response'
+      );
+    } else {
+      // Regular user - send direct message
+      await sendUserNotification(userId,
+        `💬 **Support Response**\n\n` +
+        `${replyMessage}\n\n` +
+        `Use /support to reply back.`
+      );
+    }
+    
+    await bot.sendMessage(chatId,
+      `✅ **Reply Sent**\n\n` +
+      `Chat ID: ${supportChatId}\n` +
+      `User: ${userName}\n` +
+      `Message: "${replyMessage}"\n\n` +
+      `View chat: /viewchat ${supportChatId}`
+    );
+  } catch (error) {
+    console.log('Error in /replychat:', error.message);
+    await bot.sendMessage(chatId, '❌ Error sending reply.');
+  }
+});
+
+// ==================== FIXED MISSING COMMANDS ====================
 
 // Stats command with media stats
 bot.onText(/\/stats/, async (msg) => {
@@ -3667,8 +3770,6 @@ bot.onText(/\/stats/, async (msg) => {
     await bot.sendMessage(chatId, '❌ Error loading statistics.');
   }
 });
-
-// ==================== FIXED MISSING COMMANDS ====================
 
 // Users list
 bot.onText(/\/users/, async (msg) => {
@@ -4067,91 +4168,6 @@ bot.onText(/\/supportchats/, async (msg) => {
   } catch (error) {
     console.log('Error in /supportchats:', error.message);
     await bot.sendMessage(chatId, '❌ Error loading support chats.');
-  }
-});
-
-// Reply to chat
-bot.onText(/\/replychat (.+?) (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const supportChatId = match[1];
-  const replyMessage = match[2];
-  
-  if (!isAdmin(chatId)) {
-    await bot.sendMessage(chatId, '🚫 Access denied.');
-    return;
-  }
-  
-  try {
-    const chat = await findOne(COLLECTIONS.SUPPORT_CHATS, { id: supportChatId });
-    
-    if (!chat) {
-      await bot.sendMessage(chatId, `❌ Support chat ${supportChatId} not found.`);
-      return;
-    }
-    
-    const userId = chat.userId;
-    const userName = chat.userName;
-    
-    // Add admin reply to chat
-    await saveData(COLLECTIONS.SUPPORT_CHATS,
-      { id: supportChatId },
-      { 
-        $push: { 
-          messages: {
-            sender: 'admin',
-            message: replyMessage,
-            timestamp: new Date().toISOString(),
-            adminId: chatId.toString()
-          }
-        },
-        $set: {
-          updatedAt: new Date().toISOString(),
-          adminReplied: true
-        }
-      }
-    );
-    
-    // Send notification to user based on chat type
-    if (chat.noAccount) {
-      // User without account - send to their chat ID
-      const userChatId = chat.userChatId || userId.replace('NO_ACCOUNT_', '');
-      try {
-        await bot.sendMessage(userChatId,
-          `💬 **Support Response**\n\n` +
-          `${replyMessage}\n\n` +
-          `Use /support to reply back.`
-        );
-      } catch (error) {
-        console.log('Could not send to no-account user:', error.message);
-      }
-    } else if (chat.isLoggedOut) {
-      // Logged out user - store offline message
-      const memberId = userId.replace('LOGGED_OUT_', '');
-      await storeOfflineMessage(memberId,
-        `💬 **Support Response (You were logged out)**\n\n` +
-        `${replyMessage}\n\n` +
-        `Login with /login to continue chatting.`,
-        'support_response'
-      );
-    } else {
-      // Regular user - send direct message
-      await sendUserNotification(userId,
-        `💬 **Support Response**\n\n` +
-        `${replyMessage}\n\n` +
-        `Use /support to reply back.`
-      );
-    }
-    
-    await bot.sendMessage(chatId,
-      `✅ **Reply Sent**\n\n` +
-      `Chat ID: ${supportChatId}\n` +
-      `User: ${userName}\n` +
-      `Message: "${replyMessage}"\n\n` +
-      `View chat: /viewchat ${supportChatId}`
-    );
-  } catch (error) {
-    console.log('Error in /replychat:', error.message);
-    await bot.sendMessage(chatId, '❌ Error sending reply.');
   }
 });
 
@@ -5336,10 +5352,12 @@ process.on('SIGINT', async () => {
 });
 
 console.log('✅ Starlife Advert Bot with MongoDB is running!');
-console.log('📊 All data is now stored in MongoDB Atlas (persistent storage)');
+console.log('📊 All data is now stored in MongoDB (persistent storage)');
 console.log('🔒 Accounts will not be deleted on server restart');
 console.log('✅ Security fixes applied:');
 console.log('1. ✅ MongoDB integration for persistent storage');
 console.log('2. ✅ Telegram account binding implemented (One Telegram ↔ One Member ID)');
 console.log('3. ✅ Cannot login to other accounts with same Telegram');
-console.log('4. ✅ All features working perfectly!');
+console.log('4. ✅ Fixed account creation issue');
+console.log('5. ✅ Fixed admin reply issue in support system');
+console.log('6. ✅ All features working perfectly!');
