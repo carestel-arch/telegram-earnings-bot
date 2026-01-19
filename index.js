@@ -2,6 +2,27 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const nodemailer = require("nodemailer");
+
+const transporter = nodemailer.createTransport({
+  host: "smtp-relay.brevo.com",
+  port: 587,
+  secure: false,
+  auth: {
+    user: process.env.BREVO_SMTP_USER,
+    pass: process.env.BREVO_SMTP_PASS,
+  },
+});
+
+async function sendEmail(to, subject, text) {
+  return transporter.sendMail({
+    from: `Starlife Advert <${process.env.MAIL_FROM}>`,
+    to,
+    subject,
+    text,
+    replyTo: process.env.MAIL_REPLY_TO,
+  });
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1358,6 +1379,23 @@ try {
     }
   });
   console.log('✅ Bot instance created');
+  bot.onText(/\/testemail (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const toEmail = match[1].trim();
+
+  try {
+    await sendEmail(
+      toEmail,
+      "Test from Starlife Advert",
+      "Hello! Email sending is working."
+    );
+    bot.sendMessage(chatId, "Email sent successfully!");
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(chatId, "Email failed: " + err.message);
+  }
+});
+
 } catch (error) {
   console.log('❌ Bot creation failed:', error.message);
   process.exit(1);
@@ -5851,5 +5889,6 @@ process.on('SIGINT', () => {
 console.log('✅ Starlife Advert Bot is running with PostgreSQL!');
 console.log('✅ Data is now permanently stored in PostgreSQL database');
 console.log('✅ No more data loss after 24 hours!');
+
 
 
