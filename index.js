@@ -1007,7 +1007,7 @@ async function createInvestment(investmentData) {
         investmentData.paymentMethod,
         investmentData.transactionHash || null,
         investmentData.paypalEmail || null,
-        'pending',
+        investmentData.status || 'pending',
         new Date(),
         investmentData.proofMediaId || null,
         investmentData.proofCaption || ''
