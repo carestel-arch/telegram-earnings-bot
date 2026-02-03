@@ -4721,6 +4721,9 @@ bot.onText(/\/admin/, async (msg) => {
                       `/findref REF_CODE - Find user by referral code\n` +
                       `/message USER_ID - Message user directly\n` +
                       `/checkbinding USER_ID - Check Telegram binding\n\n` +
+                      `/binduser USER_ID CHAT_ID - Bind Telegram account\n` +
+                      `/unbinduser USER_ID - Unbind Telegram account\n` +
+                      `/edituser USER_ID FIELD VALUE - Edit user details (name/email)\n\n` +
                       `💰 **Financial Management:**\n` +
                       `/addbalance USER_ID AMOUNT - Add balance\n` +
                       `/deductbalance USER_ID AMOUNT - Deduct balance\n\n` +
@@ -4748,6 +4751,132 @@ bot.onText(/\/admin/, async (msg) => {
                       `/broadcast MESSAGE - Send to all users`;
   
   await bot.sendMessage(chatId, adminMessage);
+});
+
+// Bind Telegram account to user (admin override)
+bot.onText(/\/binduser (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const targetChatId = match[2].trim();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    await updateUser(memberId, {
+      chat_id: targetChatId,
+      telegram_account_id: targetChatId,
+      account_bound: true
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ **Telegram Account Bound**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `New Chat ID: ${targetChatId}\n` +
+      `Binding Status: ✅ BOUND`
+    );
+
+    // Notify user if possible
+    await sendUserNotification(memberId,
+      `🔒 **Account Binding Updated**\n\n` +
+      `Your account has been bound to this Telegram account by an administrator.\n\n` +
+      `If this wasn't requested, contact support with /support.`
+    );
+  } catch (error) {
+    console.log('Error in /binduser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error binding Telegram account.');
+  }
+});
+
+// Unbind Telegram account from user (admin override)
+bot.onText(/\/unbinduser (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    await updateUser(memberId, {
+      chat_id: null,
+      telegram_account_id: null,
+      account_bound: false
+    });
+
+    await bot.sendMessage(chatId,
+      `✅ **Telegram Account Unbound**\n\n` +
+      `User: ${user.name} (${memberId})\n` +
+      `Binding Status: ❌ NOT BOUND`
+    );
+  } catch (error) {
+    console.log('Error in /unbinduser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error unbinding Telegram account.');
+  }
+});
+
+// Edit user details (admin override)
+bot.onText(/\/edituser (.+?) (.+?) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const memberId = match[1].toUpperCase();
+  const field = match[2].toLowerCase();
+  const value = match[3].trim();
+
+  if (!isAdmin(chatId)) {
+    await bot.sendMessage(chatId, '🚫 Access denied.');
+    return;
+  }
+
+  if (!['name', 'email'].includes(field)) {
+    await bot.sendMessage(chatId, '❌ Invalid field. Use: /edituser USER_ID name|email VALUE');
+    return;
+  }
+
+  try {
+    const user = await getUserByMemberId(memberId);
+
+    if (!user) {
+      await bot.sendMessage(chatId, `❌ User ${memberId} not found.`);
+      return;
+    }
+
+    const updates = field === 'name' ? { name: value } : { email: value };
+    const updatedUser = await updateUser(memberId, updates);
+
+    await bot.sendMessage(chatId,
+      `✅ **User Updated**\n\n` +
+      `User: ${updatedUser.name} (${memberId})\n` +
+      `Updated ${field}: ${value}`
+    );
+
+    // Notify user
+    await sendUserNotification(memberId,
+      `✅ **Account Details Updated**\n\n` +
+      `Your ${field} has been updated by an administrator.\n` +
+      `New ${field}: ${value}\n\n` +
+      `If this wasn't requested, contact support with /support.`
+    );
+  } catch (error) {
+    console.log('Error in /edituser:', error.message);
+    await bot.sendMessage(chatId, '❌ Error updating user details.');
+  }
 });
 
 // Check Telegram binding for user
