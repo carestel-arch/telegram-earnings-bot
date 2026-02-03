@@ -5835,8 +5835,7 @@ bot.onText(/\/forceprofit (.+)/, async (msg, match) => {
       
       await updateInvestment(investment.investment_id, {
         total_profit: newTotalProfit,
-        days_active: newDaysActive,
-        updated_at: new Date()
+        days_active: newDaysActive
       });
       
       // Record transaction
