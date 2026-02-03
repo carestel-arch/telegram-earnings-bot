@@ -24,6 +24,25 @@ async function sendEmail(to, subject, text) {
   });
 }
 
+function getPasswordStrengthError(password, label = 'password') {
+  if (password.length < 8) {
+    return `❌ Password must be at least 8 characters. Please enter ${label}:`;
+  }
+  if (!/[a-z]/.test(password)) {
+    return `❌ Password must include at least one lowercase letter. Please enter ${label}:`;
+  }
+  if (!/[A-Z]/.test(password)) {
+    return `❌ Password must include at least one uppercase letter. Please enter ${label}:`;
+  }
+  if (!/\d/.test(password)) {
+    return `❌ Password must include at least one number. Please enter ${label}:`;
+  }
+  if (!/[^a-zA-Z0-9]/.test(password)) {
+    return `❌ Password must include at least one symbol. Please enter ${label}:`;
+  }
+  return '';
+}
+
 // ==================== EMAIL NOTIFICATION HELPER ====================
 
 // Helper function to send email notifications
@@ -586,6 +605,7 @@ async function initDatabase() {
         telegram_account_id VARCHAR(100),
         name VARCHAR(100) NOT NULL,
         email VARCHAR(100),
+        phone VARCHAR(30),
         password_hash VARCHAR(255) NOT NULL,
         balance DECIMAL(15,2) DEFAULT 0.00,
         total_invested DECIMAL(15,2) DEFAULT 0.00,
@@ -613,6 +633,11 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id);
       CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    `);
+
+    await client.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
     `);
     
     // Create investments table
@@ -900,11 +925,11 @@ async function createUser(userData) {
   try {
     const result = await pool.query(
       `INSERT INTO users (
-        member_id, chat_id, telegram_account_id, name, email, password_hash,
+        member_id, chat_id, telegram_account_id, name, email, phone, password_hash,
         referral_code, referred_by, balance, total_invested, total_earned,
         referral_earnings, referrals, active_investments, joined_date,
         last_login, banned, bot_blocked, account_bound, offline_messages
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
       RETURNING *`,
       [
         userData.memberId,
@@ -912,6 +937,7 @@ async function createUser(userData) {
         userData.telegramAccountId,
         userData.name,
         userData.email,
+        userData.phone,
         userData.passwordHash,
         userData.referralCode,
         userData.referredBy || null,
@@ -3516,21 +3542,17 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId,
         `✅ Current password verified.\n\n` +
         `Enter your new password:\n` +
-        `• At least 6 characters\n` +
-        `• Must include letters and numbers\n\n` +
+        `• At least 8 characters\n` +
+        `• Must include uppercase, lowercase, number, and symbol\n\n` +
         `Enter new password:`
       );
     }
     else if (session.step === 'change_password_new') {
       const newPassword = text.trim();
       
-      if (newPassword.length < 6) {
-        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter new password:');
-        return;
-      }
-      
-      if (!/[a-zA-Z]/.test(newPassword) || !/\d/.test(newPassword)) {
-        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter new password:');
+      const passwordError = getPasswordStrengthError(newPassword, 'new password');
+      if (passwordError) {
+        await bot.sendMessage(chatId, passwordError);
         return;
       }
       
@@ -3601,7 +3623,7 @@ bot.on('message', async (msg) => {
       
       await bot.sendMessage(chatId,
         `✅ Name: ${name}\n\n` +
-        `Step 2/4: Enter your email\n\n` +
+        `Step 2/5: Enter your email\n\n` +
         `Example: johndoe@example.com\n` +
         `Enter your email:`
       );
@@ -3614,28 +3636,48 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, '❌ Invalid email format. Please enter a valid email:');
         return;
       }
+
+      const existingEmailUser = await getUserByEmail(email);
+      if (existingEmailUser) {
+        await bot.sendMessage(chatId, '❌ This email is already registered. Please enter a different email:');
+        return;
+      }
       
       session.data.email = email;
-      session.step = 'awaiting_password';
+      session.step = 'awaiting_phone';
       
       await bot.sendMessage(chatId,
         `✅ Email: ${email}\n\n` +
-        `Step 3/4: Create a password\n\n` +
-        `• At least 6 characters\n` +
-        `• Must include letters and numbers\n` +
+        `Step 3/5: Enter your phone number\n\n` +
+        `Include country code (e.g., +254712345678)\n` +
+        `Enter your phone number:`
+      );
+    }
+    else if (session.step === 'awaiting_phone') {
+      const phone = text.trim();
+      const phoneRegex = /^\+\d{7,15}$/;
+
+      if (!phoneRegex.test(phone)) {
+        await bot.sendMessage(chatId, '❌ Invalid phone number. Use country code (e.g., +254712345678):');
+        return;
+      }
+
+      session.data.phone = phone;
+      session.step = 'awaiting_password';
+
+      await bot.sendMessage(chatId,
+        `✅ Phone: ${phone}\n\n` +
+        `Step 4/5: Create a password\n\n` +
+        `• At least 8 characters\n` +
+        `• Must include uppercase, lowercase, number, and symbol\n` +
         `Enter your password:`
       );
     }
     else if (session.step === 'awaiting_password') {
       const password = text.trim();
-      
-      if (password.length < 6) {
-        await bot.sendMessage(chatId, '❌ Password must be at least 6 characters. Please enter password:');
-        return;
-      }
-      
-      if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-        await bot.sendMessage(chatId, '❌ Password must include both letters and numbers. Please enter password:');
+      const passwordError = getPasswordStrengthError(password);
+      if (passwordError) {
+        await bot.sendMessage(chatId, passwordError);
         return;
       }
       
@@ -3643,7 +3685,7 @@ bot.on('message', async (msg) => {
       session.step = 'awaiting_confirm_password';
       
       await bot.sendMessage(chatId,
-        `Step 4/4: Confirm your password\n\n` +
+        `Step 5/5: Confirm your password\n\n` +
         `Re-enter your password:`
       );
     }
@@ -3686,6 +3728,7 @@ bot.on('message', async (msg) => {
         telegramAccountId: chatId.toString(),
         name: session.data.name,
         email: session.data.email,
+        phone: session.data.phone,
         passwordHash: hashPassword(session.data.password),
         referralCode: referralCode,
         referredBy: referredBy,
