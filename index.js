@@ -5004,7 +5004,6 @@ bot.onText(/\/addquestion (.+)/, async (msg, match) => {
   const survey = await pool.query('SELECT * FROM surveys WHERE survey_id = $1 AND is_active = TRUE', [surveyId]);
   if (!survey.rows.length) return bot.sendMessage(chatId, `❌ Survey ${surveyId} not found or inactive.`);
 
-  adminSessions[chatId] = { step: 'survey_add_question_text', data: { surveyId, questionType: survey.rows[0].question_type } };
   adminSessions[chatId] = { step: 'survey_add_question_text', data: { surveyId } };
   await bot.sendMessage(chatId, `Enter question text for ${surveyId}:`);
 });
@@ -5356,19 +5355,11 @@ bot.on('message', async (msg) => {
       }
 
       const answer = text.trim();
-      const hasOptions = Array.isArray(q.answer_options) && q.answer_options.length > 0;
-      const isCorrect = hasOptions && answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
-      const resultText = hasOptions ? (isCorrect ? 'Correct' : 'Wrong') : 'Recorded';
       const isCorrect = answer.toLowerCase() === (q.correct_answer || '').toLowerCase();
       session.data.responses.push({
         question_id: q.question_id,
         question: q.question_text,
         answer,
-        correct_answer: hasOptions ? q.correct_answer : null,
-        result: resultText
-      });
-
-      await bot.sendMessage(chatId, resultText);
         correct_answer: q.correct_answer,
         result: isCorrect ? 'Correct' : 'Wrong'
       });
@@ -8577,59 +8568,31 @@ bot.on('message', async (msg) => {
   if (adminSession.step === 'survey_add_question_text') {
     adminSession.data.questionText = text.trim();
     adminSession.step = 'survey_add_question_options';
-    if ((adminSession.data.questionType || '').toLowerCase() === 'text') {
-      await bot.sendMessage(chatId, 'Type SKIP to save this as a text question (no options/no correct answer).');
-    } else {
-      await bot.sendMessage(chatId, 'Enter answer options separated by | (example: A|B|C|D). Type SKIP to save as text question:');
-    }
-    await bot.sendMessage(chatId, 'Enter answer options separated by | (or type SKIP for text question):');
+    await bot.sendMessage(chatId, 'Enter answer options separated by | (type SKIP for text question).');
     return;
   }
 
   if (adminSession.step === 'survey_add_question_options') {
     const raw = text.trim();
-    const questionType = (adminSession.data.questionType || '').toLowerCase();
-
-    if (raw.toUpperCase() === 'SKIP' || questionType === 'text') {
-      const questionId = await generateQuestionId(adminSession.data.surveyId);
-      await pool.query(
-        `INSERT INTO survey_questions (question_id, survey_id, question_text, answer_options, correct_answer)
-         VALUES ($1, $2, $3, $4::jsonb, $5)`,
-        [
-          questionId,
-          adminSession.data.surveyId,
-          adminSession.data.questionText,
-          JSON.stringify([]),
-          'N/A'
-        ]
-      );
-
-      await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId, questionType: 'text' });
-      delete adminSessions[chatId];
-      await bot.sendMessage(chatId, `✅ Text question saved with ID ${questionId}. No correct answer required.`);
-      return;
-    }
-
-    const options = raw.split('|').map(v => v.trim()).filter(Boolean);
-    if (!options.length) {
-      await bot.sendMessage(chatId, '❌ Please provide at least one option separated by |.');
-      return;
-    }
-
-    adminSession.data.answerOptions = options;
+    const normalizedRaw = raw.toUpperCase();
+    const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
+    adminSession.data.answerOptions = skipTokens.has(normalizedRaw)
+      ? []
+      : raw.split('|').map(v => v.trim()).filter(Boolean);
     adminSession.step = 'survey_add_question_correct';
-    await bot.sendMessage(chatId, 'Enter correct answer (must match one option exactly):');
-    adminSession.data.answerOptions = raw.toUpperCase() === 'SKIP' ? [] : raw.split('|').map(v => v.trim()).filter(Boolean);
-    adminSession.step = 'survey_add_question_correct';
-    await bot.sendMessage(chatId, 'Enter correct answer:');
+    await bot.sendMessage(chatId, 'Enter correct answer (or type SKIP if there is no single correct answer):');
     return;
   }
 
   if (adminSession.step === 'survey_add_question_correct') {
-    const correctAnswer = text.trim();
-    const options = adminSession.data.answerOptions || [];
-    if (!options.includes(correctAnswer)) {
-      await bot.sendMessage(chatId, '❌ Correct answer must match one of the provided options exactly.');
+    const raw = text.trim();
+    const normalizedRaw = raw.toUpperCase();
+    const skipTokens = new Set(['SKIP', 'SKIP FOR TEXT QUESTION']);
+    const hasOptions = Array.isArray(adminSession.data.answerOptions) && adminSession.data.answerOptions.length > 0;
+    const correctAnswer = !hasOptions && skipTokens.has(normalizedRaw) ? 'N/A' : raw;
+
+    if (!correctAnswer) {
+      await bot.sendMessage(chatId, '❌ Correct answer cannot be empty. Type SKIP only for text questions without a fixed answer.');
       return;
     }
 
@@ -8642,13 +8605,11 @@ bot.on('message', async (msg) => {
         questionId,
         adminSession.data.surveyId,
         adminSession.data.questionText,
-        JSON.stringify(options),
         JSON.stringify(adminSession.data.answerOptions || []),
         correctAnswer
       ]
     );
 
-    await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId, questionType: 'multiple_choice' });
     await logSurveyAudit(chatId.toString(), 'admin', 'add_question', 'question', questionId, { surveyId: adminSession.data.surveyId });
 
     delete adminSessions[chatId];
